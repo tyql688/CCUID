@@ -1,0 +1,404 @@
+/* CCUID chat output — light theme, GitHub-ish high contrast.
+   Loaded by utils.render.render_to_png into Playwright's browser page. */
+
+@font-face {
+    font-family: "CCUID Noto Sans SC";
+    src: url("fonts/noto-sans-sc-500.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+:root {
+    --cc-font-sans: "CCUID Noto Sans SC", system-ui,
+                    "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+    --cc-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+body {
+    background: #ffffff;
+    color: #1f2328;
+    font-family: var(--cc-font-sans);
+    margin: 0;
+    padding: 22px 26px;
+    font-size: 16px;
+    line-height: 1.75;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+h1, h2, h3, h4 {
+    color: #1f2328;
+    margin: 18px 0 10px;
+    font-weight: 700;
+    line-height: 1.4;
+}
+
+h1 { font-size: 1.55em; border-bottom: 1px solid #d0d7de; padding-bottom: 4px; }
+h2 { font-size: 1.30em; border-bottom: 1px solid #eaeef2; padding-bottom: 3px; }
+h3 { font-size: 1.15em; }
+h4 { font-size: 1.00em; }
+
+p { margin: 8px 0; }
+
+strong { color: #000000; font-weight: 700; }
+em     { color: #4a5560; font-style: italic; }
+
+code {
+    background: #f6f8fa;
+    color: #c7254e;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: var(--cc-font-mono);
+    font-size: 0.92em;
+    border: 1px solid #eaeef2;
+}
+
+pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 12px 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    line-height: 1.5;
+}
+pre code {
+    background: none;
+    color: #1f2328;
+    padding: 0;
+    border: none;
+    font-size: 0.92em;
+    white-space: inherit;
+}
+
+blockquote {
+    border-left: 4px solid #2da44e;
+    margin: 10px 0;
+    padding: 6px 14px;
+    color: #4a5560;
+    background: #f0f7f3;
+    border-radius: 0 6px 6px 0;
+}
+blockquote p { margin: 4px 0; }
+
+ul, ol {
+    margin: 8px 0;
+    padding-left: 28px;
+}
+li { margin: 4px 0; }
+
+a {
+    color: #0969da;
+    text-decoration: none;
+    border-bottom: 1px solid #b6e3ff;
+}
+
+hr {
+    border: 0;
+    border-top: 2px solid #eaeef2;
+    margin: 18px 0;
+}
+
+table {
+    border-collapse: collapse;
+    margin: 12px 0;
+    /* 固定布局 + 软换行避免长 cell 撑爆图宽 */
+    table-layout: fixed;
+    width: 100%;
+}
+th, td {
+    border: 1px solid #d0d7de;
+    padding: 7px 12px;
+    text-align: left;
+    word-break: break-word;
+}
+th {
+    background: #f6f8fa;
+    color: #1f2328;
+    font-weight: 600;
+}
+
+del {
+    color: #6e7781;
+}
+
+img {
+    max-width: 100%;
+    border-radius: 6px;
+}
+
+.task-list {
+    list-style: none;
+    padding-left: 0;
+}
+
+.task-list-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.task-list-control {
+    display: inline-flex;
+    align-items: center;
+    min-height: 1.75em;
+}
+
+.task-list-control input {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+}
+
+.footnote {
+    margin-top: 18px;
+    color: #4a5560;
+    font-size: 0.88em;
+}
+
+.footnote hr {
+    margin: 12px 0 8px;
+    border-top-width: 1px;
+}
+
+.footnote ol {
+    padding-left: 22px;
+}
+
+.footnote-backref {
+    color: #6e7781;
+    border-bottom: none;
+    margin-left: 4px;
+}
+
+.arithmatex {
+    overflow-wrap: normal;
+}
+
+div.arithmatex {
+    margin: 12px 0;
+    overflow-x: auto;
+}
+
+.katex-display {
+    margin: 0;
+}
+
+.cc-math-error {
+    color: #cf222e;
+}
+
+.cc-mermaid {
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    background: #ffffff;
+    overflow-x: auto;
+}
+
+.cc-mermaid svg {
+    max-width: 100%;
+    height: auto;
+}
+
+.cc-mermaid-error {
+    border-left: 4px solid #cf222e;
+}
+
+.highlight {
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    margin: 12px 0;
+    overflow: hidden;
+    background: #f6f8fa;
+}
+
+.highlight .filename {
+    display: block;
+    font-family: var(--cc-font-mono);
+    font-size: 0.72em;
+    color: #6e7781;
+    background: #eaeef2;
+    padding: 4px 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid #d0d7de;
+}
+
+.highlight pre {
+    margin: 0;
+    border: none;
+    border-radius: 0;
+}
+
+/* ----- CCUID-specific structure ----- */
+
+.cc-header {
+    color: #6e7781;
+    font-size: 0.88em;
+}
+.cc-subheader {
+    border-bottom: 1px solid #eaeef2;
+    padding-bottom: 8px;
+    margin: 4px 0 14px;
+}
+.cc-engine {
+    font-weight: 700;
+    color: #1f2328;
+    letter-spacing: 0.2px;
+}
+.cc-model {
+    font-family: var(--cc-font-mono);
+    font-size: 0.85em;
+    color: #4a5560;
+    background: #eaeef2;
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+.cc-ts {
+    margin-left: 10px;
+    font-family: var(--cc-font-mono);
+    color: #6e7781;
+}
+
+.cc-tag {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 4px;
+    background: #eaeef2;
+    color: #4a5560;
+    font-size: 0.78em;
+    margin-right: 8px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-family: var(--cc-font-mono);
+}
+/* tag 颜色按 ACP ToolKind 全集填，避免 chat.css class 名跟代码 _tool_kind
+   返回值脱节。新增 kind 时 CSS 加一条就行，代码不动。 */
+.cc-tag-read        { background: #ddf4ff; color: #0969da; }
+.cc-tag-edit        { background: #fff8c5; color: #9a6700; }
+.cc-tag-delete      { background: #ffd7d9; color: #82061e; }
+.cc-tag-move        { background: #eaeef2; color: #4a5560; }
+.cc-tag-execute     { background: #ffeef0; color: #cf222e; }
+.cc-tag-search      { background: #ecf2ff; color: #4a5cb0; }
+.cc-tag-think       { background: #f3eaff; color: #6639ba; }
+.cc-tag-fetch       { background: #ddf4ff; color: #0969da; }
+.cc-tag-switch_mode { background: #fef3c7; color: #92400e; }
+.cc-tag-other       { background: #eaeef2; color: #4a5560; }
+.cc-tag-failed      { background: #ffd7d9; color: #82061e; }
+.cc-tag-denied      { background: #fde68a; color: #92400e; }
+.cc-tag-allowed     { background: #a7f3d0; color: #065f46; }
+
+.cc-think {
+    color: #6e7781;
+    font-style: italic;
+    margin: 6px 0;
+    padding: 4px 0 4px 12px;
+    border-left: 3px solid #d0d7de;
+    font-size: 0.95em;
+}
+
+.cc-tool {
+    margin: 4px 0;
+    padding: 3px 0;
+    font-size: 0.95em;
+    color: #4a5560;
+}
+
+.cc-aux {
+    color: #6e7781;
+    font-size: 0.88em;
+    margin: 4px 0;
+}
+
+.cc-error {
+    margin: 10px 0;
+    padding: 10px 14px;
+    background: #ffeef0;
+    border: 1px solid #ffd7d9;
+    border-left: 4px solid #cf222e;
+    color: #82061e;
+    border-radius: 0 6px 6px 0;
+    font-weight: 500;
+}
+
+/* error body 用 <pre> 而非 <div> 是为了拿到 word-break: break-all 真生效。
+   背景 / 边框去掉，让它视觉上仍像 cc-error 的一部分。 */
+.cc-error-body {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 4px 0 0;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    line-height: 1.45;
+}
+
+.cc-permission {
+    margin: 6px 0;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.92em;
+}
+.cc-permission-denied {
+    background: #fffbeb;
+    border-left: 3px solid #d97706;
+    color: #92400e;
+}
+.cc-permission-allowed {
+    background: #f0fdf4;
+    border-left: 3px solid #16a34a;
+    color: #166534;
+}
+.cc-permission-pending {
+    background: #eff6ff;
+    border-left: 3px solid #2563eb;
+    color: #1e3a8a;
+}
+.cc-permission-hint {
+    margin-top: 4px;
+    font-size: 0.88em;
+    color: #1e40af;
+}
+.cc-tag-pending { background: #dbeafe; color: #1e3a8a; }
+
+.cc-perm-locations,
+.cc-perm-content,
+.cc-perm-options {
+    margin-top: 6px;
+    font-size: 0.9em;
+}
+.cc-perm-locations b,
+.cc-perm-content b,
+.cc-perm-options b {
+    display: inline-block;
+    min-width: 70px;
+    color: #4a5560;
+    font-size: 0.82em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.cc-perm-locations ul,
+.cc-perm-options ul {
+    margin: 4px 0 0;
+    padding-left: 20px;
+}
+.cc-perm-locations li,
+.cc-perm-options li {
+    margin: 2px 0;
+    font-family: var(--cc-font-mono);
+    font-size: 0.92em;
+}
+.cc-perm-content {
+    color: #4a5560;
+}

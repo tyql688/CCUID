@@ -1,0 +1,150 @@
+{
+  "对话": {
+    "desc": "和 coding agent 聊天",
+    "data": [
+      {
+        "name": "<prompt>",
+        "desc": "用当前 engine 聊（续上次的上下文）",
+        "eg": "帮我修一下的登录 bug",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "关旧session",
+        "desc": "关旧 session + 清空历史；下次从零开始",
+        "eg": "new",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "stop当前任务",
+        "desc": "打断当前正在跑的任务（session 还在）",
+        "eg": "stop",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "命令审批",
+        "desc": "PermissionPolicy=ask 时，agent 申请权限后用此命令审批",
+        "eg": "允许",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      }
+    ]
+  },
+  "Engine": {
+    "desc": "切换 / 查看 coding agent",
+    "data": [
+      {
+        "name": "引擎列表",
+        "desc": "列 engine + 当前选中 + 状态",
+        "eg": "eng",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "切换到claude",
+        "desc": "切到claude engine",
+        "eg": "eng claude",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "切换到codex",
+        "desc": "切到codex engine",
+        "eg": "eng codex",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "切换到cursor",
+        "desc": "切到cursor engine",
+        "eg": "eng cursor",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "切换到opencode",
+        "desc": "切到opencode engine",
+        "eg": "eng opencode",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      }
+    ]
+  },
+  "查询": {
+    "desc": "查看 session 状态与环境健康",
+    "data": [
+      {
+        "name": "状态",
+        "desc": "列出所有活跃 session",
+        "eg": "status",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "体检",
+        "desc": "检查 ACP adapter 是否在 PATH",
+        "eg": "doctor",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      }
+    ]
+  },
+  "授权": {
+    "desc": "白名单管理（仅 bot 主人 pm=0 可用）",
+    "data": [
+      {
+        "name": "授权user",
+        "desc": "把用户加进白名单；可 @某人",
+        "eg": "授权 123456",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": true
+      },
+      {
+        "name": "取消授权user",
+        "desc": "从白名单移除用户",
+        "eg": "取消授权 123456",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": true
+      },
+      {
+        "name": "授权群gid[独立|共享]",
+        "desc": "群授权 + 可选 session 模式；群内调用可省略 gid",
+        "eg": "授权群 987 共享",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": true
+      },
+      {
+        "name": "取消授权群gid",
+        "desc": "从白名单移除群",
+        "eg": "取消授权群 987",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": true
+      },
+      {
+        "name": "授权列表",
+        "desc": "列出所有授权用户和授权群",
+        "eg": "授权列表",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": true
+      }
+    ]
+  }
+}

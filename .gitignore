@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.pyright/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.pdm-build/
+.pdm-python
+
+# 本地协作元数据（按仓根 AGENTS.md：不进 git）
+AGENTS.md
+CLAUDE.md
+.agents_local/
+.claude/

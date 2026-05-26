@@ -1,0 +1,320 @@
+from __future__ import annotations
+
+import os
+import time
+import shutil
+import asyncio
+import contextlib
+from typing import Any, cast
+from collections import deque
+from dataclasses import field, dataclass
+from collections.abc import AsyncIterator
+
+from acp import (
+    PROTOCOL_VERSION,
+    Client,
+    connect_to_agent,
+)
+from acp.schema import (
+    Implementation,
+    PromptResponse,
+    SessionModelState,
+    ClientCapabilities,
+)
+from gsuid_core.logger import logger
+
+from .client import ACPClient
+from .orphans import record_spawn, record_teardown
+from ..engines import EngineSpec
+from ...version import VERSION
+
+_LIMIT = 50 * 1024 * 1024
+_TERMINATE_TIMEOUT = 3
+_STDERR_TAIL_LINES = 50
+_STDERR_DRAIN_TIMEOUT = 0.2
+_SPAWN_FAIL_THRESHOLD = 3
+_SPAWN_COOLDOWN_SEC = 60
+# ACP 握手 (initialize + new_session / load_session) 总超时。
+# 单子进程 stdin/stdout 卡死时不让 prompt 永久挂；npx 冷启动也要兜得住。
+_HANDSHAKE_TIMEOUT_SEC = 60
+
+
+class BackendError(Exception):
+    pass
+
+
+@dataclass(slots=True)
+class ACPSession:
+    proc: asyncio.subprocess.Process
+    conn: Any
+    acp_sid: str
+    queue: asyncio.Queue[Any]
+    client: ACPClient
+    stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=_STDERR_TAIL_LINES))
+    # current_model_id / display set from new_session / load_session response.
+    # `None` 表示 agent 没声明 models 字段(老 adapter)；渲染层据此决定是否展示。
+    model_id: str | None = None
+    model_name: str | None = None
+
+
+def format_tail(tail: deque[str]) -> str:
+    if not tail:
+        return ""
+    return "\nstderr tail:\n" + "\n".join(tail)
+
+
+def _resolve_launcher(cmd: tuple[str, ...]) -> tuple[str, ...]:
+    """把 cmd[0] 解析成绝对路径再交给 subprocess。Windows 上 asyncio 的
+    CreateProcessW 不走 PATHEXT，传 `npx` 会 WinError 2 找不到（实际是 `npx.cmd`）；
+    shutil.which 自己懂 PATHEXT，所以无论平台都靠它兜底。绝对路径直接通过。"""
+    if not cmd:
+        return cmd
+    resolved = shutil.which(cmd[0])
+    if resolved is None:
+        return cmd  # 留给 spawn 自己抛，错误信息会包含原始 cmd[0]
+    return (resolved, *cmd[1:])
+
+
+def _build_spawn_env(engine: EngineSpec) -> dict[str, str]:
+    """Claude wrapper 默认 spawn 自带的旧版 cli.js（模型列表跟终端不一致）；
+    检测到本地有 `claude` binary 时通过 CLAUDE_CODE_EXECUTABLE 让它走终端那一份。"""
+    env = dict(os.environ)
+    if engine.name == "claude" and "CLAUDE_CODE_EXECUTABLE" not in env:
+        system_claude = shutil.which("claude")
+        if system_claude:
+            env["CLAUDE_CODE_EXECUTABLE"] = system_claude
+            logger.info(f"[CCUID/{engine.name}] CLAUDE_CODE_EXECUTABLE={system_claude}")
+    return env
+
+
+def _extract_model(state: SessionModelState | None) -> tuple[str | None, str | None]:
+    """label 直接用 selected.name——agent 给什么就显示什么。"""
+    if state is None:
+        return None, None
+    for m in state.available_models:
+        if m.model_id == state.current_model_id:
+            return state.current_model_id, m.name
+    return state.current_model_id, None
+
+
+class ACPBackend:
+    def __init__(self, engine: EngineSpec) -> None:
+        self.engine = engine
+        self._sess: dict[str, ACPSession] = {}
+        self._lock = asyncio.Lock()
+        self._spawn_failures = 0
+        self._cooldown_until = 0.0
+        self._watch_tasks: set[asyncio.Task[None]] = set()
+
+    def get_native_session_id(self, sid: str) -> str | None:
+        s = self._sess.get(sid)
+        return s.acp_sid if s else None
+
+    def get_model(self, sid: str) -> tuple[str | None, str | None]:
+        """Both `None` when the agent didn't advertise a model in new/load."""
+        s = self._sess.get(sid)
+        if s is None:
+            return None, None
+        return s.model_id, s.model_name
+
+    async def prompt(
+        self,
+        sid: str,
+        workdir: str,
+        blocks: list[Any],
+        resume_id: str | None = None,
+        auto_approve: bool = False,
+    ) -> AsyncIterator[Any]:
+        s = await self._ensure(sid, workdir, resume_id)
+        # 同 session 跨 prompt 复用同一条 queue (ACPClient.session_update 全往这推)；
+        # 上一轮 cancel 收尾时可能还有 session_update 落在 queue 里，进新一轮前清掉，
+        # 否则会被新 prompt 的 loop 当成自己的输出（症状：新提问返回上次的答案）。
+        while not s.queue.empty():
+            s.queue.get_nowait()
+
+        # 一次性 yolo flag：本次 prompt 期间所有 permission 自动 allow_always。
+        # ACPClient.request_permission 看这个值；prompt 结束时清掉。
+        s.client.auto_approve_this_prompt = auto_approve
+
+        async def _run() -> None:
+            try:
+                resp = await s.conn.prompt(prompt=blocks, session_id=s.acp_sid)
+                await s.queue.put(resp)
+            except BaseException as e:  # noqa: BLE001
+                await s.queue.put(e)
+
+        task = asyncio.create_task(_run())
+        try:
+            while True:
+                item = await s.queue.get()
+                if item is None:
+                    # 子进程退出：stderr_tail 含真实退出原因，附给用户排查
+                    raise BackendError(f"ACP {self.engine.name} 退出{format_tail(s.stderr_tail)}")
+                if isinstance(item, BaseException):
+                    # prompt 阶段错误（如 codex 的 TLS reconnect 重试）：不附 stderr，
+                    # 那一坨 noise 进 gscore 日志已经够开发者排查，用户错误卡只看主因
+                    raise BackendError(str(item)) from item
+                yield item
+                if isinstance(item, PromptResponse):
+                    return
+        finally:
+            # 必须 cancel + await：只 cancel 不 await 时 _run 还会继续 running 一小段
+            # （直到 await prompt 抛 CancelledError 再 push 异常到 queue），那段时间
+            # 我们已经 release prompt_lock，下一轮 prompt 进来会看到残留事件。
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+
+    async def cancel(self, sid: str) -> None:
+        s = self._sess.get(sid)
+        if s and s.proc.returncode is None:
+            await s.conn.cancel(session_id=s.acp_sid)
+
+    async def close(self, sid: str) -> None:
+        async with self._lock:
+            s = self._sess.pop(sid, None)
+        if s:
+            await self._teardown(s)
+
+    async def close_all(self) -> None:
+        async with self._lock:
+            sess = list(self._sess.values())
+            self._sess.clear()
+        for s in sess:
+            await self._teardown(s)
+
+    async def _ensure(self, sid: str, workdir: str, resume_id: str | None) -> ACPSession:
+        async with self._lock:
+            s = self._sess.get(sid)
+            if s and s.proc.returncode is None:
+                return s
+
+            now = time.time()
+            if now < self._cooldown_until:
+                raise BackendError(f"ACP {self.engine.name} 启动熔断中，{int(self._cooldown_until - now)}s 后重试")
+
+            os.makedirs(workdir, exist_ok=True)
+            cmd = _resolve_launcher(self.engine.cmd)
+            logger.info(f"[CCUID/{self.engine.name}] {' '.join(cmd)} cwd={workdir}")
+
+            spawn_env = _build_spawn_env(self.engine)
+
+            proc: asyncio.subprocess.Process | None = None
+            stderr_task: asyncio.Task[None] | None = None
+            stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+            queue: asyncio.Queue[Any] = asyncio.Queue()
+            client = ACPClient(queue, sid)
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=workdir,
+                    limit=_LIMIT,
+                    env=spawn_env,
+                )
+                # 立刻登记到 ~/.ccuid/spawned_pids.json：gscore 万一被强杀，下次
+                # 启动通过 reap_orphans() 把这个 PID 找出来 kill 掉，避免内存泄露。
+                record_spawn(proc.pid, self.engine.name)
+                stderr_task = asyncio.create_task(self._pump_stderr(proc, stderr_tail))
+                assert proc.stdin is not None and proc.stdout is not None
+                conn = connect_to_agent(cast(Client, client), proc.stdin, proc.stdout)
+                acp_sid: str
+                # NewSessionResponse / LoadSessionResponse 都带 typed
+                # `models: SessionModelState | None`，直接取，render 用来在
+                # header 渲染真实模型名。
+                models_state: SessionModelState | None
+                # 子进程 stdout 卡死时整个握手会永久挂；统一一个总超时把
+                # initialize + new/load_session 都罩住，超时由外层 except 兜底清进程。
+                async with asyncio.timeout(_HANDSHAKE_TIMEOUT_SEC):
+                    init = await conn.initialize(
+                        protocol_version=PROTOCOL_VERSION,
+                        client_capabilities=ClientCapabilities(),
+                        client_info=Implementation(name="CCUID", version=VERSION),
+                    )
+                    if init.protocol_version != PROTOCOL_VERSION:
+                        logger.warning(
+                            f"[CCUID/{self.engine.name}] protocol {init.protocol_version} != {PROTOCOL_VERSION}"
+                        )
+                    if resume_id:
+                        try:
+                            load_resp = await conn.load_session(cwd=workdir, session_id=resume_id, mcp_servers=[])
+                            acp_sid = resume_id
+                            models_state = load_resp.models
+                        except Exception as load_err:
+                            logger.warning(
+                                f"[CCUID/{self.engine.name}] load_session 失败，fallback new_session: {load_err}"
+                            )
+                            new_resp = await conn.new_session(cwd=workdir, mcp_servers=[])
+                            acp_sid = new_resp.session_id
+                            models_state = new_resp.models
+                    else:
+                        new_resp = await conn.new_session(cwd=workdir, mcp_servers=[])
+                        acp_sid = new_resp.session_id
+                        models_state = new_resp.models
+                model_id, model_name = _extract_model(models_state)
+            except Exception as e:
+                if proc is not None:
+                    if proc.returncode is None:
+                        with contextlib.suppress(Exception):
+                            proc.terminate()
+                    record_teardown(proc.pid)
+                if stderr_task is not None:
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(stderr_task, timeout=_STDERR_DRAIN_TIMEOUT)
+                self._spawn_failures += 1
+                if self._spawn_failures >= _SPAWN_FAIL_THRESHOLD:
+                    self._cooldown_until = time.time() + _SPAWN_COOLDOWN_SEC
+                    logger.warning(
+                        f"[CCUID/{self.engine.name}] 连续 {self._spawn_failures} 次启动失败，熔断 {_SPAWN_COOLDOWN_SEC}s"
+                    )
+                raise BackendError(f"启动 {self.engine.name} 失败: {e}{format_tail(stderr_tail)}") from e
+
+            self._spawn_failures = 0
+            self._cooldown_until = 0.0
+            # 保引用，避免 GC 提前回收（Python 3.11+ 会发 RuntimeWarning）。
+            watch_task = asyncio.create_task(self._watch_exit(proc, queue))
+            self._watch_tasks.add(watch_task)
+            watch_task.add_done_callback(self._watch_tasks.discard)
+            s = ACPSession(
+                proc=proc,
+                conn=conn,
+                acp_sid=acp_sid,
+                queue=queue,
+                client=client,
+                stderr_tail=stderr_tail,
+                model_id=model_id,
+                model_name=model_name,
+            )
+            self._sess[sid] = s
+            return s
+
+    async def _teardown(self, s: ACPSession) -> None:
+        with contextlib.suppress(Exception):
+            await s.conn.close()
+        if s.proc.returncode is None:
+            try:
+                s.proc.terminate()
+                await asyncio.wait_for(s.proc.wait(), timeout=_TERMINATE_TIMEOUT)
+            except TimeoutError:
+                s.proc.kill()
+            except Exception as err:
+                logger.warning(f"[CCUID/{self.engine.name}] teardown failed pid={s.proc.pid}: {err!r}")
+        record_teardown(s.proc.pid)
+
+    async def _pump_stderr(self, proc: asyncio.subprocess.Process, tail: deque[str]) -> None:
+        assert proc.stderr is not None
+        with contextlib.suppress(Exception):
+            async for raw in proc.stderr:
+                line = raw.decode("utf-8", errors="replace").rstrip()
+                if line:
+                    tail.append(line)
+                    logger.warning(f"[CCUID/{self.engine.name}] {line}")
+
+    async def _watch_exit(self, proc: asyncio.subprocess.Process, queue: asyncio.Queue[Any]) -> None:
+        try:
+            await proc.wait()
+        finally:
+            await queue.put(None)

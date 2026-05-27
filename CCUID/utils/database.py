@@ -130,6 +130,41 @@ class CCUIDSessionNative(SQLModel, table=True):
             await session.delete(row)
 
 
+class CCUIDSessionModel(SQLModel, table=True):
+    """用户在该 sid 上手动选的 model_id；ACP 协议没有「session 创建时带 model」的口子，
+    backend._ensure 拿到 session 后会读这张表 reapply 一次，让选择跨进程 / cc new 粘住。"""
+
+    __tablename__: str = "ccuid_session_model"
+    session_id: str = Field(primary_key=True, max_length=256)
+    model_id: str = Field(default="", max_length=256)
+    updated_at: int = Field(default=0)
+
+    @classmethod
+    @with_session
+    async def fetch(cls, session: AsyncSession, sid: str) -> str | None:
+        row = await session.get(cls, sid)
+        return row.model_id if row and row.model_id else None
+
+    @classmethod
+    @with_session
+    async def store(cls, session: AsyncSession, sid: str, model_id: str) -> None:
+        now = int(time.time())
+        row = await session.get(cls, sid)
+        if row:
+            row.model_id = model_id
+            row.updated_at = now
+            session.add(row)
+            return
+        session.add(cls(session_id=sid, model_id=model_id, updated_at=now))
+
+    @classmethod
+    @with_session
+    async def drop(cls, session: AsyncSession, sid: str) -> None:
+        row = await session.get(cls, sid)
+        if row:
+            await session.delete(row)
+
+
 class CCUIDUserEngine(SQLModel, table=True):
     __tablename__: str = "ccuid_user_engine"
     user_id: str = Field(primary_key=True, max_length=128)

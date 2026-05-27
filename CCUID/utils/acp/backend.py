@@ -27,6 +27,7 @@ from .client import ACPClient
 from .orphans import record_spawn, record_teardown
 from ..engines import EngineSpec
 from ...version import VERSION
+from ..database import CCUIDSessionModel
 
 _LIMIT = 50 * 1024 * 1024
 _TERMINATE_TIMEOUT = 3
@@ -279,6 +280,20 @@ class ACPBackend:
                         acp_sid = new_resp.session_id
                         models_state = new_resp.models
                 model_id, model_name, available_models = _extract_models(models_state)
+                # reapply 失败 / id 已不在 available 时 drop 记录，回 default 不再重试。
+                sticky = await CCUIDSessionModel.fetch(sid)
+                if sticky is not None and sticky != model_id:
+                    sticky_name = next((n for mid, n in available_models if mid == sticky), None)
+                    if sticky_name is None:
+                        await CCUIDSessionModel.drop(sid)
+                    else:
+                        try:
+                            async with asyncio.timeout(_HANDSHAKE_TIMEOUT_SEC):
+                                await conn.set_session_model(model_id=sticky, session_id=acp_sid)
+                            model_id, model_name = sticky, sticky_name
+                        except Exception as sticky_err:
+                            logger.warning(f"[CCUID/{self.engine.name}] sticky {sticky} reapply: {sticky_err}")
+                            await CCUIDSessionModel.drop(sid)
             except Exception as e:
                 if proc is not None:
                     if proc.returncode is None:

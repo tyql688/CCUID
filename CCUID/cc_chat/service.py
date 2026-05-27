@@ -16,7 +16,7 @@ from ..utils.session import (
     DequeueNoSession,
     make_sid,
 )
-from ..utils.database import CCUIDUserEngine, CCUIDSessionNative
+from ..utils.database import CCUIDUserEngine, CCUIDSessionModel, CCUIDSessionNative
 from ..utils.attachments import build_prompt
 
 _PREVIEW_MAX = 30
@@ -279,4 +279,5 @@ async def do_model_set(bot: Bot, ev: Event, engine: str, token: str) -> None:
         await bot.send(ModelMsg.not_found(token))
         return
     new_id, new_name = switched
+    await CCUIDSessionModel.store(meta.sid, new_id)
     await bot.send(ModelMsg.switched(new_id, new_name))

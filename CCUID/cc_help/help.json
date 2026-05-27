@@ -103,7 +103,7 @@
       {
         "name": "switch model",
         "desc": "切到指定 model_id / 序号 / name 子串",
-        "eg": "model claude-sonnet-4.6",
+        "eg": "model gpt-5.5",
         "need_ck": false,
         "need_sk": false,
         "need_admin": false

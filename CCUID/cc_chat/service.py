@@ -3,11 +3,33 @@ import shutil
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 
+from ..utils.msgs import ChatMsg, ModelMsg, QueueMsg
 from ..utils.output import RenderContext, render
 from ..utils.engines import DEFAULT_ENGINE, EngineSpec, resolve, list_engines
-from ..utils.session import REGISTRY, PendingApproval, make_sid
+from ..utils.session import (
+    REGISTRY,
+    DequeueOk,
+    DequeueNotFound,
+    PendingApproval,
+    DequeueForbidden,
+    DequeueIsRunning,
+    DequeueNoSession,
+    make_sid,
+)
 from ..utils.database import CCUIDUserEngine, CCUIDSessionNative
 from ..utils.attachments import build_prompt
+
+_PREVIEW_MAX = 30
+
+
+def _make_preview(text: str) -> str:
+    """Compact one-line summary shown in queue listings."""
+    flat = text.replace("\n", " ").strip()
+    if not flat:
+        return QueueMsg.PREVIEW_ATTACHMENTS_ONLY
+    if len(flat) <= _PREVIEW_MAX:
+        return flat
+    return flat[:_PREVIEW_MAX] + "…"
 
 
 async def current_engine(ev: Event) -> str:
@@ -23,10 +45,7 @@ def _describe_pending(pending: PendingApproval) -> str:
         parts.append(f"[{pending.tool_kind}]")
     if pending.tool_title is not None:
         parts.append(pending.tool_title)
-    return " ".join(parts) if parts else "(无描述)"
-
-
-_NO_PENDING_HINT = "当前没有待审批的权限请求\n如果刚发过命令，agent 可能还在思考"
+    return " ".join(parts) if parts else ChatMsg.DESC_FALLBACK
 
 
 async def do_approve(bot: Bot, ev: Event, engine: str, *, always: bool) -> None:
@@ -35,7 +54,7 @@ async def do_approve(bot: Bot, ev: Event, engine: str, *, always: bool) -> None:
     Fails closed (cancelled) if the agent didn't offer the requested allowance."""
     pending = await REGISTRY.take_pending(ev.user_id, ev.group_id, engine)
     if pending is None:
-        await bot.send(_NO_PENDING_HINT)
+        await bot.send(ChatMsg.NO_PENDING)
         return
     target = "allow_always" if always else "allow_once"
     chosen_option_id = next((opt.option_id for opt in pending.options if opt.kind == target), None)
@@ -43,14 +62,10 @@ async def do_approve(bot: Bot, ev: Event, engine: str, *, always: bool) -> None:
     if chosen_option_id is None:
         offered = ", ".join(opt.kind for opt in pending.options)
         pending.future.set_result(None)
-        await bot.send(f"agent 未提供 {target}（仅 {offered}）\n→ 已发出协议级 cancelled · {desc}")
+        await bot.send(ChatMsg.approve_unavailable(target, offered, desc))
         return
     pending.future.set_result(chosen_option_id)
-    if always:
-        head, note = "已永久允许", "agent 缓存放行，同类操作不再询问"
-    else:
-        head, note = "已允许", "agent 已收到放行，正在继续执行"
-    await bot.send(f"✓ {head}  {desc}\n{note}")
+    await bot.send(ChatMsg.approved(desc, always=always))
 
 
 async def do_deny(bot: Bot, ev: Event, engine: str) -> None:
@@ -63,7 +78,7 @@ async def do_deny(bot: Bot, ev: Event, engine: str) -> None:
     `reject_always` 实测 claude-code-acp 不下发，CCUID 也不暴露给用户。"""
     pending = await REGISTRY.take_pending(ev.user_id, ev.group_id, engine)
     if pending is None:
-        await bot.send(_NO_PENDING_HINT)
+        await bot.send(ChatMsg.NO_PENDING)
         return
     chosen_option_id = next(
         (opt.option_id for opt in pending.options if opt.kind == "reject_once"),
@@ -73,10 +88,10 @@ async def do_deny(bot: Bot, ev: Event, engine: str) -> None:
     if chosen_option_id is None:
         offered = ", ".join(opt.kind for opt in pending.options)
         pending.future.set_result(None)
-        await bot.send(f"agent 未提供 reject_once（仅 {offered}）\n→ 已发出协议级 cancelled · {desc}")
+        await bot.send(ChatMsg.deny_unavailable(offered, desc))
         return
     pending.future.set_result(chosen_option_id)
-    await bot.send(f"✗ 已拒绝  {desc}\nagent 将放弃此操作")
+    await bot.send(ChatMsg.denied(desc))
 
 
 async def do_chat(bot: Bot, ev: Event, engine: str, prompt: str) -> None:
@@ -91,22 +106,72 @@ async def do_chat(bot: Bot, ev: Event, engine: str, prompt: str) -> None:
         return mname if mname is not None else mid
 
     ctx = RenderContext(ev.bot_id, engine, model_resolver=_model_label, workdir=meta.workdir)
-    await render(bot, REGISTRY.run_prompt(meta, backend, blocks), ctx)
+    await render(
+        bot,
+        REGISTRY.run_prompt(
+            meta,
+            backend,
+            blocks,
+            submitter_uid=ev.user_id,
+            preview=_make_preview(prompt),
+        ),
+        ctx,
+    )
 
 
 async def do_new(bot: Bot, ev: Event, engine: str) -> None:
     await REGISTRY.restart(ev.user_id, ev.group_id, engine)
-    await bot.send(f"{engine}: 已重置")
+    await bot.send(ChatMsg.reset_done(engine))
 
 
 async def do_clear(bot: Bot, ev: Event, engine: str) -> None:
     found = await REGISTRY.clear_workdir(ev.user_id, ev.group_id, engine)
-    await bot.send(f"{engine}: 工作区已清空" if found else f"{engine}: 工作区不存在，无需清理")
+    await bot.send(ChatMsg.clear_done(engine) if found else ChatMsg.clear_not_found(engine))
 
 
 async def do_stop(bot: Bot, ev: Event, engine: str) -> None:
     n = await REGISTRY.cancel(ev.user_id, ev.group_id, engine)
-    await bot.send(f"已打断 {n} 个任务")
+    await bot.send(ChatMsg.stop_done(n))
+
+
+async def do_queue_list(bot: Bot, ev: Event, engine: str) -> None:
+    """列出当前 session 的整条队列（含正在跑的那条，加 `*` 标记）。"""
+    meta = REGISTRY.find(ev.user_id, ev.group_id, engine)
+    if meta is None:
+        await bot.send(QueueMsg.NO_SESSION)
+        return
+    entries = meta.queue.snapshot()
+    if not entries:
+        await bot.send(QueueMsg.EMPTY)
+        return
+    running = meta.queue.running()
+    running_qid = running.qid if running is not None else None
+    lines = [QueueMsg.header(engine, len(entries))]
+    for e in entries:
+        mark = "*" if e.qid == running_qid else " "
+        lines.append(f"{mark} #{e.qid} {e.uid} {e.waited_sec}s — {e.preview}")
+    lines.append(QueueMsg.list_hint())
+    await bot.send("\n".join(lines))
+
+
+async def do_queue_remove(bot: Bot, ev: Event, engine: str, qid_arg: str) -> None:
+    """删队列里的一条 prompt（拒绝跑中的、拒绝别人的）。"""
+    if not qid_arg.isdigit():
+        await bot.send(QueueMsg.usage_dequeue())
+        return
+    qid = int(qid_arg)
+    result = await REGISTRY.dequeue(ev.user_id, ev.group_id, engine, qid)
+    match result:
+        case DequeueNoSession():
+            await bot.send(QueueMsg.NO_SESSION)
+        case DequeueNotFound(qid=q):
+            await bot.send(QueueMsg.not_found(q))
+        case DequeueIsRunning(entry=e):
+            await bot.send(QueueMsg.is_running(e.qid))
+        case DequeueForbidden(entry=e):
+            await bot.send(QueueMsg.forbidden(e.qid, e.uid))
+        case DequeueOk(entry=e):
+            await bot.send(QueueMsg.cancelled(e.qid))
 
 
 async def do_arm_yolo(bot: Bot, ev: Event, engine: str) -> None:
@@ -114,7 +179,7 @@ async def do_arm_yolo(bot: Bot, ev: Event, engine: str) -> None:
     所有 ACP permission 都按 allow_always 走。"""
     meta, _ = await REGISTRY.get_or_create(ev.user_id, ev.group_id, engine)
     meta.next_prompt_auto_approve = True
-    await bot.send(f"{engine}: 下条 prompt 自动放行所有权限（一次性）")
+    await bot.send(ChatMsg.yolo_armed(engine))
 
 
 async def _engine_status(spec: EngineSpec, ev: Event) -> str:
@@ -140,7 +205,7 @@ async def _engine_status(spec: EngineSpec, ev: Event) -> str:
 
 async def do_engine_show(bot: Bot, ev: Event) -> None:
     cur = await current_engine(ev)
-    lines = ["**CCUID Engines**"]
+    lines = [ChatMsg.ENGINES_HEADER]
     for i, e in enumerate(list_engines(), 1):
         mark = "*" if e.name == cur else " "
         lines.append(f"{i}.{mark} {e.display} · {await _engine_status(e, ev)}")
@@ -152,4 +217,66 @@ async def do_engine_set(bot: Bot, ev: Event, token: str) -> None:
     if target is None:
         return
     await CCUIDUserEngine.set(ev.user_id, ev.group_id, target.name)
-    await bot.send(f"engine: {target.name}")
+    await bot.send(ChatMsg.engine_set(target.name))
+
+
+def _resolve_model(token: str, available: tuple[tuple[str, str], ...]) -> tuple[str, str] | None:
+    """支持 model_id 精确 / 1-based 序号 / name 大小写无关子串。子串多命中算失败，
+    用户得写得更具体；列里没有 model_id 精确同字串时 substring 兜底。"""
+    low = token.strip().lower()
+    for mid, name in available:
+        if low in (mid.lower(), name.lower()):
+            return mid, name
+    if low.isdigit():
+        idx = int(low) - 1
+        if 0 <= idx < len(available):
+            return available[idx]
+    matches = [(mid, name) for mid, name in available if low in mid.lower() or low in name.lower()]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+async def do_model_show(bot: Bot, ev: Event, engine: str) -> None:
+    meta = REGISTRY.find(ev.user_id, ev.group_id, engine)
+    if meta is None:
+        await bot.send(ModelMsg.NO_SESSION)
+        return
+    backend = REGISTRY.backend(engine)
+    cur_id, available = backend.list_models(meta.sid)
+    if not available:
+        await bot.send(ModelMsg.NO_MODELS)
+        return
+    lines = [ModelMsg.header(engine, len(available))]
+    for i, (mid, name) in enumerate(available, 1):
+        mark = "*" if mid == cur_id else " "
+        lines.append(f"{i}.{mark} {name} · {mid}")
+    lines.append(ModelMsg.list_hint())
+    await bot.send("\n".join(lines))
+
+
+async def do_model_set(bot: Bot, ev: Event, engine: str, token: str) -> None:
+    meta = REGISTRY.find(ev.user_id, ev.group_id, engine)
+    if meta is None:
+        await bot.send(ModelMsg.NO_SESSION)
+        return
+    backend = REGISTRY.backend(engine)
+    _, available = backend.list_models(meta.sid)
+    if not available:
+        await bot.send(ModelMsg.NO_MODELS)
+        return
+    resolved = _resolve_model(token, available)
+    if resolved is None:
+        await bot.send(ModelMsg.not_found(token))
+        return
+    target_id, _ = resolved
+    try:
+        switched = await backend.set_model(meta.sid, target_id)
+    except Exception as e:
+        await bot.send(ModelMsg.switch_failed(str(e)))
+        return
+    if switched is None:
+        await bot.send(ModelMsg.not_found(token))
+        return
+    new_id, new_name = switched
+    await bot.send(ModelMsg.switched(new_id, new_name))

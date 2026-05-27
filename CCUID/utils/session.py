@@ -15,6 +15,7 @@ from .mode import GroupMode
 from .engines import get_engine
 from .database import CCUIDGrantGroup, CCUIDSessionNative
 from .acp.backend import ACPBackend, BackendError
+from .prompt_queue import QueueEntry, PromptQueue
 from ..cc_config.cc_config import CCUIDConfig
 from .resource.RESOURCE_PATH import WORKDIR_ROOT
 
@@ -66,11 +67,9 @@ class SessionMeta:
     workdir: str
     shared: bool = False
     last_active: float = field(default_factory=time.time)
-    busy: bool = False
-    # prompt_lock 让同一 session 的多条 prompt 串行（queue 模式）。
-    # waiters 记下排队中 + 正在跑的 task，cc 停 一次性全部 cancel。
-    prompt_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    waiters: set[asyncio.Task[Any]] = field(default_factory=set)
+    # 同 session 多条 prompt 的串行排队 (lock + entries 在一个对象里)；
+    # 详见 prompt_queue.PromptQueue。
+    queue: PromptQueue = field(default_factory=PromptQueue)
     # `cc 下次允许` 设的一次性 flag：下条 prompt 期间所有权限自动 allow_always。
     # 进入 run_prompt 时 consume（置 False）传给 backend。
     next_prompt_auto_approve: bool = False
@@ -80,10 +79,12 @@ class SessionMeta:
         return int(time.time() - self.last_active)
 
     @property
+    def busy(self) -> bool:
+        return self.queue.is_busy
+
+    @property
     def queue_depth(self) -> int:
-        # waiters 包含正在 hold prompt_lock 的那个 task；减掉它得到真正排队人数。
-        # 不变式 busy=True ⇒ task ∈ waiters，所以 ≥ 0（finally 顺序保证）。
-        return len(self.waiters) - (1 if self.busy else 0)
+        return self.queue.depth
 
 
 @dataclass(slots=True)
@@ -94,6 +95,36 @@ class PendingApproval:
     options: list[PermissionOption]
     tool_kind: str | None
     tool_title: str | None
+
+
+# dequeue 五态结果：上层 match 分发文案，pyright 做穷尽检查
+@dataclass(slots=True, frozen=True)
+class DequeueOk:
+    entry: QueueEntry
+
+
+@dataclass(slots=True, frozen=True)
+class DequeueNotFound:
+    qid: int
+
+
+@dataclass(slots=True, frozen=True)
+class DequeueNoSession:
+    pass
+
+
+@dataclass(slots=True, frozen=True)
+class DequeueIsRunning:
+    entry: QueueEntry
+
+
+@dataclass(slots=True, frozen=True)
+class DequeueForbidden:
+    entry: QueueEntry
+    caller_uid: str
+
+
+DequeueResult = DequeueOk | DequeueNotFound | DequeueNoSession | DequeueIsRunning | DequeueForbidden
 
 
 class SessionRegistry:
@@ -154,10 +185,13 @@ class SessionRegistry:
         meta: SessionMeta,
         backend: ACPBackend,
         blocks: list[Any],
+        *,
+        submitter_uid: str,
+        preview: str,
     ) -> AsyncIterator[Any]:
-        # BusyBehavior: queue（默认）= 抢 prompt_lock 串行；reject = 忙就直接报错
+        # BusyBehavior: queue（默认）= 抢 lock 串行；reject = 忙就直接报错
         behavior: str = CCUIDConfig.get_config("BusyBehavior").data
-        if behavior == "reject" and meta.prompt_lock.locked():
+        if behavior == "reject" and meta.queue.is_busy:
             raise BackendError("session 忙，已拒绝（队列模式可在配置改）")
 
         task = asyncio.current_task()
@@ -166,15 +200,15 @@ class SessionRegistry:
         async with self._lock:
             if self._meta.get(meta.sid) is not meta:
                 raise BackendError("session closed")
-            meta.waiters.add(task)
+            entry = meta.queue.add(task, submitter_uid, preview)
 
         try:
-            async with meta.prompt_lock:
+            async with meta.queue.lock:
                 # 拿锁之后再确认 session 还在（排队期间可能被 stop / restart / LRU 收走）
                 async with self._lock:
                     if self._meta.get(meta.sid) is not meta:
                         raise BackendError("session closed")
-                    meta.busy = True
+                    meta.queue.mark_running(entry.qid)
                     meta.last_active = time.time()
                     # 一次性 yolo flag：consume 后立刻清零，避免影响下下个 prompt
                     auto_approve = meta.next_prompt_auto_approve
@@ -191,41 +225,74 @@ class SessionRegistry:
                     alive = False
                     async with self._lock:
                         if self._meta.get(meta.sid) is meta:
-                            meta.busy = False
+                            meta.queue.mark_done(entry.qid)
                             meta.last_active = time.time()
                             alive = True
                     if alive and native:
                         await CCUIDSessionNative.store(meta.sid, native)
         finally:
-            # discard 幂等，无论从哪条路径退出都一次性清掉自己。queue_depth 在
-            # busy=False 但 task 还没 discard 的微秒窗口可能瞬时偏高 1，无害。
+            # remove 幂等：cancel/dequeue 路径可能已经摘掉这条
             async with self._lock:
-                meta.waiters.discard(task)
+                meta.queue.remove(entry.qid)
 
     async def cancel(self, uid: str, gid: str | None, engine: str) -> int:
+        """一次性砍掉 (uid, gid, engine) 对应所有 session 的全部 prompt。
+
+        `cc 停` 自己跑在另一条 task 上——cancel_all_except(current) 把它排除掉。
+        """
         shared = await self._shared(gid)
-        async with self._lock:
-            targets = [
-                m
-                for m in self._meta.values()
-                if m.gid == gid and m.engine == engine and (m.busy or m.waiters) and (shared or m.uid == uid)
-            ]
-        count = 0
         current = asyncio.current_task()
-        for meta in targets:
-            # 先把排队 / 正在跑的 task 全 cancel —— 它们要么卡在 prompt_lock.acquire()，
-            # 要么在 yield 循环里，都会抛 CancelledError 干净退出 run_prompt
-            async with self._lock:
-                # `cc 停` 自己也是个 task；不能 cancel 自己。
-                waiters = [t for t in meta.waiters if t is not current]
-                meta.waiters.difference_update(waiters)
-            for t in waiters:
-                t.cancel()
-            count += len(waiters)
-            # 再通知 ACP 端取消当前请求（让 agent 停手），这是底层清理不再计数
-            if meta.busy:
-                await self.backend(meta.engine).cancel(meta.sid)
+        notify: list[SessionMeta] = []
+        count = 0
+        # 全程持锁完成 cancel：task.cancel() 是 sync (仅排出 CancelledError)，
+        # 不会触发 await；锁内做完 backend.cancel 才放出去。
+        async with self._lock:
+            for m in self._meta.values():
+                if m.gid != gid or m.engine != engine:
+                    continue
+                if not (shared or m.uid == uid):
+                    continue
+                if not m.queue.has_entries:
+                    continue
+                removed, running_cancelled = m.queue.cancel_all_except(current)
+                count += len(removed)
+                if running_cancelled:
+                    notify.append(m)
+        # ACP 协议级 cancel 是 async，丢出锁外
+        for m in notify:
+            await self.backend(m.engine).cancel(m.sid)
         return count
+
+    async def dequeue(
+        self,
+        uid: str,
+        gid: str | None,
+        engine: str,
+        qid: int,
+    ) -> DequeueResult:
+        """删队列里的一条 prompt（不会动正在跑的那条）。
+
+        授权：只允许提交者本人删自己的条目；shared 群里别人的条目也拒绝
+        （想清场用 `cc 停`）。
+        """
+        sid = make_sid(uid, gid, engine, shared=await self._shared(gid))
+        async with self._lock:
+            meta = self._meta.get(sid)
+            if meta is None:
+                return DequeueNoSession()
+            entry = meta.queue.get(qid)
+            if entry is None:
+                return DequeueNotFound(qid=qid)
+            running = meta.queue.running()
+            if running is not None and running.qid == qid:
+                return DequeueIsRunning(entry=entry)
+            if entry.uid != uid:
+                return DequeueForbidden(entry=entry, caller_uid=uid)
+            # 锁内 cancel + remove：杜绝 "刚 cancel 就抢到 lock 开跑" 的窗口；
+            # run_prompt 的 finally 再 remove 一次也无害（pop 幂等）。
+            entry.task.cancel()
+            meta.queue.remove(qid)
+            return DequeueOk(entry=entry)
 
     async def restart(self, uid: str, gid: str | None, engine: str) -> None:
         sid = make_sid(uid, gid, engine, shared=await self._shared(gid))
@@ -346,7 +413,7 @@ class SessionRegistry:
                     targets = [
                         self._meta.pop(sid)
                         for sid, m in list(self._meta.items())
-                        if not (m.busy or m.waiters) and now - m.last_active > timeout
+                        if not m.queue.has_entries and now - m.last_active > timeout
                     ]
                     self._closing.update(m.sid for m in targets)
                 # Idle expiry drops native_id；workdir 留给用户自己 `clear` 清，不自动删。

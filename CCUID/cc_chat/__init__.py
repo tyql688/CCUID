@@ -10,9 +10,13 @@ from .service import (
     do_clear,
     do_approve,
     do_arm_yolo,
+    do_model_set,
     do_engine_set,
+    do_model_show,
+    do_queue_list,
     current_engine,
     do_engine_show,
+    do_queue_remove,
 )
 from ..utils.auth import require_auth
 
@@ -43,10 +47,33 @@ async def engine(bot: Bot, ev: Event) -> None:
         await do_engine_set(bot, ev, arg)
 
 
+@sv_cmd.on_command(("model", "模型"), block=True)
+@require_auth
+async def model(bot: Bot, ev: Event) -> None:
+    arg = ev.text.strip()
+    cur = await current_engine(ev)
+    if not arg:
+        await do_model_show(bot, ev, cur)
+    else:
+        await do_model_set(bot, ev, cur, arg)
+
+
 @sv_cmd.on_fullmatch(("停", "stop"), block=True)
 @require_auth
 async def stop(bot: Bot, ev: Event) -> None:
     await do_stop(bot, ev, await current_engine(ev))
+
+
+@sv_cmd.on_fullmatch(("队列", "queue"), block=True)
+@require_auth
+async def queue_list(bot: Bot, ev: Event) -> None:
+    await do_queue_list(bot, ev, await current_engine(ev))
+
+
+@sv_cmd.on_command(("出队", "dequeue"), block=True)
+@require_auth
+async def queue_remove(bot: Bot, ev: Event) -> None:
+    await do_queue_remove(bot, ev, await current_engine(ev), ev.text.strip())
 
 
 @sv_cmd.on_fullmatch(

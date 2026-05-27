@@ -55,6 +55,9 @@ class ACPSession:
     # `None` 表示 agent 没声明 models 字段(老 adapter)；渲染层据此决定是否展示。
     model_id: str | None = None
     model_name: str | None = None
+    # agent 在 new/load_session 响应里同时给出整张目录 (model_id, name) 对。
+    # `cc 模型` 命令拿这个列；不变就别重拉，session 期间稳定。
+    available_models: tuple[tuple[str, str], ...] = ()
 
 
 def format_tail(tail: deque[str]) -> str:
@@ -87,14 +90,15 @@ def _build_spawn_env(engine: EngineSpec) -> dict[str, str]:
     return env
 
 
-def _extract_model(state: SessionModelState | None) -> tuple[str | None, str | None]:
+def _extract_models(
+    state: SessionModelState | None,
+) -> tuple[str | None, str | None, tuple[tuple[str, str], ...]]:
     """label 直接用 selected.name——agent 给什么就显示什么。"""
     if state is None:
-        return None, None
-    for m in state.available_models:
-        if m.model_id == state.current_model_id:
-            return state.current_model_id, m.name
-    return state.current_model_id, None
+        return None, None, ()
+    available = tuple((m.model_id, m.name) for m in state.available_models)
+    cur_name = next((name for mid, name in available if mid == state.current_model_id), None)
+    return state.current_model_id, cur_name, available
 
 
 class ACPBackend:
@@ -116,6 +120,26 @@ class ACPBackend:
         if s is None:
             return None, None
         return s.model_id, s.model_name
+
+    def list_models(self, sid: str) -> tuple[str | None, tuple[tuple[str, str], ...]]:
+        """返回 (当前 model_id, 全部 (id,name) 对)。session 没起就 (None, ())。"""
+        s = self._sess.get(sid)
+        if s is None:
+            return None, ()
+        return s.model_id, s.available_models
+
+    async def set_model(self, sid: str, model_id: str) -> tuple[str, str] | None:
+        """切到目录内的 model_id。SetSessionModelResponse 是空响应，本地直接更新缓存的
+        (model_id, name)。目录里没有这条返回 None，让上层报 not found。"""
+        s = self._sess.get(sid)
+        if s is None:
+            return None
+        match = next(((mid, name) for mid, name in s.available_models if mid == model_id), None)
+        if match is None:
+            return None
+        await s.conn.set_session_model(model_id=model_id, session_id=s.acp_sid)
+        s.model_id, s.model_name = match
+        return match
 
     async def prompt(
         self,
@@ -254,7 +278,7 @@ class ACPBackend:
                         new_resp = await conn.new_session(cwd=workdir, mcp_servers=[])
                         acp_sid = new_resp.session_id
                         models_state = new_resp.models
-                model_id, model_name = _extract_model(models_state)
+                model_id, model_name, available_models = _extract_models(models_state)
             except Exception as e:
                 if proc is not None:
                     if proc.returncode is None:
@@ -287,6 +311,7 @@ class ACPBackend:
                 stderr_tail=stderr_tail,
                 model_id=model_id,
                 model_name=model_name,
+                available_models=available_models,
             )
             self._sess[sid] = s
             return s

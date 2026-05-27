@@ -89,6 +89,27 @@
       }
     ]
   },
+  "Model": {
+    "desc": "查看 / 切换当前 engine session 的 model",
+    "data": [
+      {
+        "name": "model list",
+        "desc": "列当前 engine session 的可用 model，标星当前的",
+        "eg": "model",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "switch model",
+        "desc": "切到指定 model_id / 序号 / name 子串",
+        "eg": "model claude-sonnet-4.6",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      }
+    ]
+  },
   "查询": {
     "desc": "查看 session 状态与环境健康",
     "data": [

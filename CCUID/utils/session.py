@@ -22,17 +22,28 @@ _SAFE = re.compile(r"[^a-zA-Z0-9_\-]")
 _PART_MAX = 48
 _CLOSING_POLL_SEC = 0.05
 _CLEANUP_INTERVAL_SEC = 300
-_DAY_SEC = 86400
 _MAX_CONCURRENT_SESSIONS = 16
-_MAX_WORKDIR_AGE_DAYS = 7
 
 
-async def _purge_workdir(workdir: str) -> None:
+async def _clear_workdir_contents(workdir: str) -> bool:
+    """清空目录内容但保留目录本身——active 子进程 cwd 仍是这条 inode，
+    rmtree 会让 cwd 指向已 unlink 的僵尸目录。返回是否找到目录。"""
     p = Path(workdir)
     if not p.exists():
-        return
-    # shutil.rmtree(ignore_errors=True) 自己已经吞了 OSError，外层 try 多余
-    await asyncio.to_thread(shutil.rmtree, p, ignore_errors=True)
+        return False
+
+    def _wipe() -> None:
+        for child in p.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                try:
+                    child.unlink()
+                except OSError:
+                    pass
+
+    await asyncio.to_thread(_wipe)
+    return True
 
 
 def _part(value: str) -> str:
@@ -222,21 +233,17 @@ class SessionRegistry:
             target = self._meta.pop(sid, None)
             if target:
                 self._closing.add(sid)
-        purge = bool(CCUIDConfig.get_config("PurgeWorkdirOnReset").data)
         if target:
-            await self._finish_close(target, drop_native=True, purge_workdir=purge)
+            await self._finish_close(target, drop_native=True)
         else:
             await CCUIDSessionNative.drop(sid)
-            if purge:
-                await _purge_workdir(str(WORKDIR_ROOT / sid))
 
-    async def _finish_close(
-        self,
-        meta: SessionMeta,
-        *,
-        drop_native: bool,
-        purge_workdir: bool = False,
-    ) -> None:
+    async def clear_workdir(self, uid: str, gid: str | None, engine: str) -> bool:
+        """只擦 workdir 内容，不动 session。返回 workdir 是否存在。"""
+        sid = make_sid(uid, gid, engine, shared=await self._shared(gid))
+        return await _clear_workdir_contents(str(WORKDIR_ROOT / sid))
+
+    async def _finish_close(self, meta: SessionMeta, *, drop_native: bool) -> None:
         try:
             try:
                 await self.backend(meta.engine).close(meta.sid)
@@ -244,16 +251,12 @@ class SessionRegistry:
                 logger.exception(f"[CCUID] close failed: {meta.sid}")
             if drop_native:
                 await CCUIDSessionNative.drop(meta.sid)
-            if purge_workdir:
-                await _purge_workdir(meta.workdir)
         finally:
             async with self._lock:
                 self._closing.discard(meta.sid)
 
     def list_sessions(self) -> list[SessionMeta]:
         return list(self._meta.values())
-
-    # ---- ask-mode permission approvals (used by ACPClient + cc允许/cc拒绝) ----
 
     def register_pending(
         self,
@@ -346,7 +349,7 @@ class SessionRegistry:
                         if not (m.busy or m.waiters) and now - m.last_active > timeout
                     ]
                     self._closing.update(m.sid for m in targets)
-                # Idle expiry drops native_id; workdir 留到 _reap_expired 按硬过期天数删除。
+                # Idle expiry drops native_id；workdir 留给用户自己 `clear` 清，不自动删。
                 for meta in targets:
                     await self._finish_close(meta, drop_native=True)
                 await self._reap_expired()
@@ -356,11 +359,12 @@ class SessionRegistry:
                 logger.exception("[CCUID] cleanup failed")
 
     async def _reap_expired(self) -> None:
-        """Drop expired native_ids by DB time, purge old workdirs by mtime."""
+        """超时 native_id 从 DB drop 掉，agent 下次拿不到旧 session_id resume。
+        workdir 不动——用户自己用 `clear` 命令清理。"""
         if not WORKDIR_ROOT.exists():
             return
         soft_sec = int(CCUIDConfig.get_config("IdleTimeoutSec").data)
-        if soft_sec <= 0 and _MAX_WORKDIR_AGE_DAYS <= 0:
+        if soft_sec <= 0:
             return
         now = time.time()
         async with self._lock:
@@ -368,21 +372,11 @@ class SessionRegistry:
         for entry in WORKDIR_ROOT.iterdir():
             if not entry.is_dir() or entry.name in live:
                 continue
-            try:
-                age = now - entry.stat().st_mtime
-            except OSError:
-                continue
-            if _MAX_WORKDIR_AGE_DAYS > 0 and age > _MAX_WORKDIR_AGE_DAYS * _DAY_SEC:
-                await _purge_workdir(str(entry))
+            updated_at = await CCUIDSessionNative.fetch_updated_at(entry.name)
+            if updated_at is not None and updated_at > 0 and now - updated_at > soft_sec:
                 await CCUIDSessionNative.drop(entry.name)
-                logger.info(f"[CCUID] session 硬过期(workdir 已回收): {entry.name}")
-                continue
-            if soft_sec > 0:
-                updated_at = await CCUIDSessionNative.fetch_updated_at(entry.name)
-                if updated_at is not None and updated_at > 0 and now - updated_at > soft_sec:
-                    await CCUIDSessionNative.drop(entry.name)
-                    idle = int(now - updated_at)
-                    logger.info(f"[CCUID] session 软过期(上下文已丢弃): {entry.name} idle={idle}s")
+                idle = int(now - updated_at)
+                logger.info(f"[CCUID] session 软过期(上下文已丢弃): {entry.name} idle={idle}s")
 
 
 REGISTRY = SessionRegistry()

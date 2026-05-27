@@ -42,11 +42,6 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         "queue",
         options=["queue", "reject"],
     ),
-    "PurgeWorkdirOnReset": GsBoolConfig(
-        "重置 session 时清空 workdir",
-        "true=cc new/reset 时删除该 session 的工作目录内容",
-        True,
-    ),
     "OutputFormat": GsStrConfig(
         "输出格式",
         "text=纯文本/合并转发；image=agent 回复用 markdown 图渲染；auto=按长度自动切换",

@@ -99,6 +99,11 @@ async def do_new(bot: Bot, ev: Event, engine: str) -> None:
     await bot.send(f"{engine}: 已重置")
 
 
+async def do_clear(bot: Bot, ev: Event, engine: str) -> None:
+    found = await REGISTRY.clear_workdir(ev.user_id, ev.group_id, engine)
+    await bot.send(f"{engine}: 工作区已清空" if found else f"{engine}: 工作区不存在，无需清理")
+
+
 async def do_stop(bot: Bot, ev: Event, engine: str) -> None:
     n = await REGISTRY.cancel(ev.user_id, ev.group_id, engine)
     await bot.send(f"已打断 {n} 个任务")

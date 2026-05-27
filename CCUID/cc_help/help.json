@@ -12,7 +12,7 @@
       },
       {
         "name": "关旧session",
-        "desc": "关旧 session + 清空历史；下次从零开始",
+        "desc": "关旧 session + 清空历史；下次从零开始（保留 workdir）",
         "eg": "new",
         "need_ck": false,
         "need_sk": false,
@@ -22,6 +22,14 @@
         "name": "stop当前任务",
         "desc": "打断当前正在跑的任务（session 还在）",
         "eg": "stop",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "clear工作区",
+        "desc": "只清 workdir 文件，session 不动",
+        "eg": "clear",
         "need_ck": false,
         "need_sk": false,
         "need_admin": false

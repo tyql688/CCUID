@@ -25,6 +25,6 @@ def require_auth(fn: Callable[[Bot, Event], Awaitable[Any]]) -> Callable[[Bot, E
         if await is_authorized(ev.user_id, ev.group_id, ev.user_pm):
             await fn(bot, ev)
             return
-        logger.info(f"[CCUID] unauthorized: user={ev.user_id} group={ev.group_id} cmd={ev.command!r}")
+        logger.debug(f"[CCUID] unauthorized: user={ev.user_id} group={ev.group_id} cmd={ev.text!r}")
 
     return wrapper

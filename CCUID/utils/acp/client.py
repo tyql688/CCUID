@@ -28,12 +28,8 @@ class ACPClient:
         # request_permission 看这个值决定走默认 policy 还是无脑 allow_always。
         self.auto_approve_this_prompt: bool = False
 
-    # ---------------- agent → client notifications ---------------- #
-
     async def session_update(self, session_id: str, update: Any, **_: Any) -> None:  # noqa: ARG002
         await self._queue.put(update)
-
-    # ---------------- permission RPC ---------------- #
 
     async def request_permission(
         self,

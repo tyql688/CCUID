@@ -7,6 +7,7 @@ from .service import (
     do_chat,
     do_deny,
     do_stop,
+    do_clear,
     do_approve,
     do_arm_yolo,
     do_engine_set,
@@ -55,6 +56,12 @@ async def stop(bot: Bot, ev: Event) -> None:
 @require_auth
 async def new(bot: Bot, ev: Event) -> None:
     await do_new(bot, ev, await current_engine(ev))
+
+
+@sv_cmd.on_fullmatch(("clear", "清理", "清空"), block=True)
+@require_auth
+async def clear(bot: Bot, ev: Event) -> None:
+    await do_clear(bot, ev, await current_engine(ev))
 
 
 @sv_cmd.on_fullmatch(("下次允许", "yolo"), block=True)

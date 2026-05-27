@@ -255,7 +255,8 @@ def _should_image(blocks: list[ChatBlock]) -> bool:
 async def _render_blocks_to_png(blocks: list[ChatBlock], ctx: RenderContext) -> bytes | None:
     display = get_engine(ctx.engine).display
     md = build_markdown(blocks, ImageContext(engine_display=display, model_label=ctx.model_resolver()))
-    return await render_to_png(md, max_width=_IMAGE_MAX_WIDTH)
+    scale = int(CCUIDConfig.get_config("RenderScale").data)
+    return await render_to_png(md, max_width=_IMAGE_MAX_WIDTH, scale=scale)
 
 
 async def _send_as_images(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext) -> bool:

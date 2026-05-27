@@ -48,6 +48,12 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         "image",
         options=["text", "image", "auto"],
     ),
+    "RenderScale": GsIntConfig(
+        "渲染像素密度",
+        "1=标清省流量；2=高清(默认, Retina/手机屏锐利)；3=超清(体积约 1×9，没必要)",
+        2,
+        max_value=3,
+    ),
     "AttachmentSandbox": GsBoolConfig(
         "附件只发 workdir 内",
         "关=任何 agent 回答里的本地路径都直发；开=只发当前 session workdir 内的文件，挡 /etc/passwd / ~/.ssh 之类",

@@ -278,14 +278,14 @@ async def _render_extras(page: Page) -> None:
     await page.evaluate("window.ccuidRenderExtras()")
 
 
-async def render_to_png(md: str, *, max_width: int = 720) -> bytes | None:
+async def render_to_png(md: str, *, max_width: int = 720, scale: int = 2) -> bytes | None:
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
                 context = await browser.new_context(
                     color_scheme="light",
-                    device_scale_factor=1,
+                    device_scale_factor=scale,
                     java_script_enabled=True,
                     locale="zh-CN",
                     viewport={"width": max_width, "height": _PLAYWRIGHT_INITIAL_HEIGHT},

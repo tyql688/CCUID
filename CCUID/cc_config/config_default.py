@@ -3,6 +3,7 @@ from gsuid_core.utils.plugins_config.models import (
     GsIntConfig,
     GsStrConfig,
     GsBoolConfig,
+    GsListStrConfig,
 )
 
 CONFIG_DEFAULT: dict[str, GSC] = {
@@ -58,5 +59,26 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         "附件只发 workdir 内",
         "关=任何 agent 回答里的本地路径都直发；开=只发当前 session workdir 内的文件，挡 /etc/passwd / ~/.ssh 之类",
         False,
+    ),
+    "AgentProxyMode": GsBoolConfig(
+        "Agent CLI 使用代理",
+        "关闭=不额外注入代理；开启=使用 AgentProxyUrl 只注入 AgentProxyAgents 列出的 agent 子进程",
+        False,
+    ),
+    "AgentProxyUrl": GsStrConfig(
+        "Agent CLI 代理地址",
+        "AgentProxyMode 开启时使用，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:7890；空=不注入",
+        "http://127.0.0.1:7890",
+    ),
+    "AgentProxyAgents": GsListStrConfig(
+        "使用代理的 Agent CLI",
+        "AgentProxyMode 开启时只给这些 agent 注入代理；all=全部；空列表=不注入任何 agent",
+        [],
+        options=["all", "claude", "codex", "cursor", "opencode"],
+    ),
+    "AgentNoProxy": GsStrConfig(
+        "Agent CLI 不走代理地址",
+        "AgentProxyMode 开启时写入 NO_PROXY/no_proxy，逗号分隔",
+        "127.0.0.1,localhost,::1",
     ),
 }

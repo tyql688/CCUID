@@ -5,14 +5,13 @@ import time
 import shutil
 import asyncio
 import contextlib
-from typing import Any, cast
+from typing import Any
 from collections import deque
 from dataclasses import field, dataclass
 from collections.abc import AsyncIterator
 
 from acp import (
     PROTOCOL_VERSION,
-    Client,
     connect_to_agent,
 )
 from acp.schema import (
@@ -35,6 +34,15 @@ _STDERR_TAIL_LINES = 50
 _STDERR_DRAIN_TIMEOUT = 0.2
 _SPAWN_FAIL_THRESHOLD = 3
 _SPAWN_COOLDOWN_SEC = 60
+_PROXY_URL_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
+_NO_PROXY_ENV_KEYS = ("NO_PROXY", "no_proxy")
 # ACP 握手 (initialize + new_session / load_session) 总超时。
 # 单子进程 stdin/stdout 卡死时不让 prompt 永久挂；npx 冷启动也要兜得住。
 _HANDSHAKE_TIMEOUT_SEC = 60
@@ -79,10 +87,42 @@ def _resolve_launcher(cmd: tuple[str, ...]) -> tuple[str, ...]:
     return (resolved, *cmd[1:])
 
 
+def _agent_uses_proxy(engine_name: str) -> bool:
+    from ...cc_config.cc_config import CCUIDConfig
+
+    agents = CCUIDConfig.get_config("AgentProxyAgents").data
+    enabled = {agent.strip().lower() for agent in agents if agent.strip()}
+    return "all" in enabled or engine_name in enabled
+
+
+def _apply_agent_proxy_env(env: dict[str, str], engine_name: str) -> None:
+    from ...cc_config.cc_config import CCUIDConfig
+
+    if not CCUIDConfig.get_config("AgentProxyMode").data:
+        return
+
+    if not _agent_uses_proxy(engine_name):
+        return
+
+    proxy_url = CCUIDConfig.get_config("AgentProxyUrl").data.strip()
+    if proxy_url == "":
+        return
+
+    for key in _PROXY_URL_ENV_KEYS:
+        env[key] = proxy_url
+
+    no_proxy = CCUIDConfig.get_config("AgentNoProxy").data.strip()
+    if no_proxy == "":
+        return
+    for key in _NO_PROXY_ENV_KEYS:
+        env[key] = no_proxy
+
+
 def _build_spawn_env(engine: EngineSpec) -> dict[str, str]:
     """Claude wrapper 默认 spawn 自带的旧版 cli.js（模型列表跟终端不一致）；
     检测到本地有 `claude` binary 时通过 CLAUDE_CODE_EXECUTABLE 让它走终端那一份。"""
     env = dict(os.environ)
+    _apply_agent_proxy_env(env, engine.name)
     if engine.name == "claude" and "CLAUDE_CODE_EXECUTABLE" not in env:
         system_claude = shutil.which("claude")
         if system_claude:
@@ -245,7 +285,7 @@ class ACPBackend:
                 record_spawn(proc.pid, self.engine.name)
                 stderr_task = asyncio.create_task(self._pump_stderr(proc, stderr_tail))
                 assert proc.stdin is not None and proc.stdout is not None
-                conn = connect_to_agent(cast(Client, client), proc.stdin, proc.stdout)
+                conn = connect_to_agent(client, proc.stdin, proc.stdout)
                 acp_sid: str
                 # NewSessionResponse / LoadSessionResponse 都带 typed
                 # `models: SessionModelState | None`，直接取，render 用来在
@@ -265,18 +305,18 @@ class ACPBackend:
                         )
                     if resume_id:
                         try:
-                            load_resp = await conn.load_session(cwd=workdir, session_id=resume_id, mcp_servers=[])
+                            load_resp = await conn.load_session(cwd=workdir, session_id=resume_id)
                             acp_sid = resume_id
                             models_state = load_resp.models
                         except Exception as load_err:
                             logger.warning(
                                 f"[CCUID/{self.engine.name}] load_session 失败，fallback new_session: {load_err}"
                             )
-                            new_resp = await conn.new_session(cwd=workdir, mcp_servers=[])
+                            new_resp = await conn.new_session(cwd=workdir)
                             acp_sid = new_resp.session_id
                             models_state = new_resp.models
                     else:
-                        new_resp = await conn.new_session(cwd=workdir, mcp_servers=[])
+                        new_resp = await conn.new_session(cwd=workdir)
                         acp_sid = new_resp.session_id
                         models_state = new_resp.models
                 model_id, model_name, available_models = _extract_models(models_state)

@@ -65,7 +65,7 @@ async def do_approve(bot: Bot, ev: Event, engine: str, *, always: bool) -> None:
         await bot.send(ChatMsg.approve_unavailable(target, offered, desc))
         return
     pending.future.set_result(chosen_option_id)
-    await bot.send(ChatMsg.approved(desc, always=always))
+    await bot.send(ChatMsg.approved(always=always))
 
 
 async def do_deny(bot: Bot, ev: Event, engine: str) -> None:
@@ -91,7 +91,7 @@ async def do_deny(bot: Bot, ev: Event, engine: str) -> None:
         await bot.send(ChatMsg.deny_unavailable(offered, desc))
         return
     pending.future.set_result(chosen_option_id)
-    await bot.send(ChatMsg.denied(desc))
+    await bot.send(ChatMsg.denied())
 
 
 async def do_chat(bot: Bot, ev: Event, engine: str, prompt: str) -> None:

@@ -23,14 +23,20 @@ from acp.schema import (
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.segment import MessageSegment
+from gsuid_core.message_models import Button
 
-from .render import ChatBlock, ImageContext, render_to_png, build_markdown
+from .render import (
+    ChatBlock,
+    ImageContext,
+    render_to_png,
+    build_markdown,
+    clean_permission_summary,
+)
 from .engines import get_engine
-from .acp.events import PermissionEvent
+from .acp.events import PermissionEvent, PermissionOptionView
 from .acp.backend import BackendError
 from ..cc_config.cc_config import CCUIDConfig
 
-_FORWARD_PLATFORMS = ("qq", "qqgroup", "onebot")
 _AUTO_IMAGE_THRESHOLD = 600
 _IMAGE_MAX_WIDTH = 720
 
@@ -158,6 +164,21 @@ def _append_or_replace_tool(buf: list[ChatBlock], block: ChatBlock) -> None:
     buf.append(block)
 
 
+def _permission_buttons(options: tuple[PermissionOptionView, ...]) -> list[list[Button]]:
+    from ..cc_config.prefix import cc_prefix
+
+    pfx = cc_prefix()
+    kinds = {option.kind for option in options}
+    buttons: list[Button] = []
+    if "allow_once" in kinds:
+        buttons.append(Button("允许一次", f"{pfx}允许", "允许", action=2))
+    if "allow_always" in kinds:
+        buttons.append(Button("总是允许", f"{pfx}允许 永久", "永久", action=2))
+    if "reject_once" in kinds:
+        buttons.append(Button("拒绝一次", f"{pfx}拒绝", "拒绝", style=0, action=2))
+    return [buttons] if buttons else []
+
+
 def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
     """Flatten blocks into discrete text strings for the text/forward path."""
     out: list[str] = []
@@ -182,41 +203,37 @@ def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
             tool_title = block.meta["title"]
             matched = block.meta["matched"]
             locations = block.meta["locations"]
-            content_summary = block.meta["content_summary"]
-            options = block.meta["options"]
+            content_summary = clean_permission_summary(block.meta["content_summary"])
             if decision == "ask":
-                from ..cc_config.prefix import cc_prefix
-
-                pfx = cc_prefix()
-                label = f"权限待审批(发送 {pfx}允许 / {pfx}允许 永久 / {pfx}拒绝)"
+                label = "待审核"
             elif not matched:
-                label = f"权限策略={decision} 但 agent 未提供该选项 → cancelled"
+                label = "已取消"
             elif decision == "allow_once":
-                label = "权限自动允许(单次)"
+                label = "已自动允许"
             elif decision == "allow_always":
-                label = "权限自动允许(永久)"
+                label = "已自动永久允许"
             elif decision == "reject_once":
-                label = "权限自动拒绝(单次)"
+                label = "已自动拒绝"
             else:
                 raise AssertionError(f"unhandled PermissionMode: {decision!r}")
-            parts = [f"[{label}]"]
+            parts = [label]
             if tool_kind is not None:
-                parts.append(tool_kind)
-            if tool_title is not None:
-                parts.append(tool_title)
+                parts.append(f"[{tool_kind}]")
             line = " · ".join(parts)
             extras: list[str] = []
+            if tool_title is not None:
+                extras.append(f"操作：{tool_title}")
+            if not matched:
+                extras.append(f"结果：策略 {decision} 没有匹配选项，已取消")
             if locations:
                 extras.append(
-                    "locations: "
+                    "位置："
                     + ", ".join(f"{loc.path}{f':{loc.line}' if loc.line is not None else ''}" for loc in locations)
                 )
             if content_summary is not None:
-                extras.append(f"content: {content_summary}")
-            if options and decision == "ask":
-                extras.append("options: " + ", ".join(f"{opt.kind}({opt.name})" for opt in options))
+                extras.append(f"原因：{content_summary}")
             if extras:
-                line += "\n  " + "\n  ".join(extras)
+                line += "\n" + "\n".join(extras)
             out.append(line)
     return out
 
@@ -224,7 +241,7 @@ def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
 def _block_render_size(block: ChatBlock) -> int:
     """估算单个 block 渲染后大致字符数 —— `_should_image` 用它跟阈值比较。
     `agent_md` / `plan` 直接看 body；`permission` body 是空串但渲染后的卡
-    片字符量主要来自 meta（locations / options / content_summary），所以
+    片字符量主要来自 meta（locations / content_summary），所以
     单独算。其它 block 类型字符量小，按 body 长度即可。"""
     if block.kind != "permission":
         return len(block.body)
@@ -237,19 +254,23 @@ def _block_render_size(block: ChatBlock) -> int:
         size += len(summary)
     for loc in block.meta["locations"]:
         size += len(loc.path) + 8  # 行号 + 分隔符的粗估
-    for opt in block.meta["options"]:
-        size += len(opt.name) + len(opt.kind) + 4
     return size
 
 
 def _should_image(blocks: list[ChatBlock]) -> bool:
     fmt = str(CCUIDConfig.get_config("OutputFormat").data).lower()
+    return _should_image_with_format(blocks, fmt)
+
+
+def _should_image_with_format(blocks: list[ChatBlock], fmt: str) -> bool:
     if fmt == "text":
         return False
     if fmt == "image":
         return True
-    total = sum(_block_render_size(b) for b in blocks)
-    return total >= _AUTO_IMAGE_THRESHOLD
+    if fmt == "auto":
+        total = sum(_block_render_size(b) for b in blocks)
+        return total >= _AUTO_IMAGE_THRESHOLD
+    raise AssertionError(f"unhandled OutputFormat: {fmt!r}")
 
 
 async def _render_blocks_to_png(blocks: list[ChatBlock], ctx: RenderContext) -> bytes | None:
@@ -269,14 +290,34 @@ async def _send_as_images(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext)
     return True
 
 
-async def _send_as_text(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext) -> None:
+async def _send_as_text(bot: Bot, blocks: list[ChatBlock]) -> None:
     parts = blocks_to_text_parts(blocks)
     if not parts:
         return
-    if len(parts) > 1 and ctx.bot_id.startswith(_FORWARD_PLATFORMS):
-        await bot.send(MessageSegment.node([MessageSegment.text(p) for p in parts]))
-    else:
-        await bot.send("\n\n".join(parts))
+    await bot.send("\n\n".join(parts))
+
+
+async def _send_permission_request(bot: Bot, block: ChatBlock, ctx: RenderContext) -> None:
+    parts = blocks_to_text_parts([block])
+    if not parts:
+        return
+    buttons = _permission_buttons(block.meta["options"])
+    if not buttons:
+        await _send_blocks(bot, [block], ctx)
+        return
+    reply = parts[0]
+    ask_format = str(CCUIDConfig.get_config("AskOutputFormat").data).lower()
+    if _should_image_with_format([block], ask_format):
+        sent = await _send_as_images(bot, [block], ctx)
+        if sent:
+            reply = "请选择"
+    await bot.send_option(
+        reply,
+        buttons,
+        unsuported_platform=True,
+        sep=" / ",
+        command_tips="可发送：",
+    )
 
 
 async def _send_blocks(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext) -> None:
@@ -286,9 +327,9 @@ async def _send_blocks(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext) ->
     if _should_image(renderable):
         sent = await _send_as_images(bot, renderable, ctx)
         if not sent:
-            await _send_as_text(bot, renderable, ctx)
+            await _send_as_text(bot, renderable)
     else:
-        await _send_as_text(bot, renderable, ctx)
+        await _send_as_text(bot, renderable)
     # agent 通过 ImageContentBlock 内联返回的图，不论走图走文都得追加发
     await _send_agent_images(bot, blocks)
     await _send_referenced_attachments(bot, renderable, ctx)
@@ -404,7 +445,10 @@ async def render(bot: Bot, events: AsyncIterator[Any], ctx: RenderContext) -> No
                 if out.meta["decision"] != "ask" and not show_auto_perms:
                     continue
                 await flush_pending()
-                await _send_blocks(bot, [out], ctx)
+                if out.meta["decision"] == "ask":
+                    await _send_permission_request(bot, out, ctx)
+                else:
+                    await _send_blocks(bot, [out], ctx)
             else:
                 flush_agent()
                 _append_or_replace_tool(pending, out)

@@ -33,9 +33,15 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         max_value=3600,
     ),
     "ShowAutoPermissions": GsBoolConfig(
-        "回发自动决策的权限卡",
-        "false=自动 allow/reject 时不发权限卡（默认）；true=每次权限请求都发。ask 模式始终发",
+        "回发自动权限决策",
+        "关闭=只显示待审核请求；开启=自动 allow/reject 也回发结果",
         False,
+    ),
+    "AskOutputFormat": GsStrConfig(
+        "待审核输出格式",
+        "text=文字提示；image=markdown 图渲染；auto=按长度自动切换",
+        "auto",
+        options=["text", "image", "auto"],
     ),
     "BusyBehavior": GsStrConfig(
         "session 忙时新消息的处理",

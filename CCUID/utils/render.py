@@ -37,6 +37,18 @@ def _text(s: str) -> str:
     return escape(s, quote=False).replace("\n", " ")
 
 
+def clean_permission_summary(summary: str | None) -> str | None:
+    if summary is None:
+        return None
+    text = summary.strip()
+    if text.startswith("text: "):
+        text = text[6:].strip()
+    if text.startswith("Not in allowlist:"):
+        detail = text.removeprefix("Not in allowlist:").strip()
+        return f"不在允许列表：{detail}" if detail else "不在允许列表"
+    return text
+
+
 def _format_mermaid(
     source: str, language: str, class_name: str, options: dict[str, Any], md: Any, **kwargs: Any
 ) -> str:
@@ -149,56 +161,64 @@ def _render_block(block: ChatBlock) -> str:
 
 
 def _render_permission(block: ChatBlock) -> str:
-    from ..cc_config.prefix import cc_prefix
-
     decision = block.meta["decision"]
     tool_kind = block.meta["kind"]
     tool_title = block.meta["title"]
     matched = block.meta["matched"]
     locations = block.meta["locations"]
-    content_summary = block.meta["content_summary"]
-    options = block.meta["options"]
+    content_summary = clean_permission_summary(block.meta["content_summary"])
     hint = ""
     if decision == "ask":
-        cls, label = "pending", "NEED APPROVAL"
-        # Pull the live prefix so the hint stays correct when the user has
-        # remapped the CCUID plugin prefix away from the default "cc".
-        pfx = cc_prefix()
-        hint = (
-            '<div class="cc-permission-hint">→ 发送 '
-            f"<code>{pfx}允许</code> / <code>{pfx}允许 永久</code> / "
-            f"<code>{pfx}拒绝</code> 决定</div>"
-        )
+        cls, label = "pending", "待审核"
     elif not matched:
-        cls, label = "denied", f"NO OPTION {decision} → CANCELLED"
+        cls, label = "denied", "已取消"
     elif decision == "allow_once":
-        cls, label = "allowed", "AUTO ALLOW ONCE"
+        cls, label = "allowed", "已自动允许"
     elif decision == "allow_always":
-        cls, label = "allowed", "AUTO ALLOW ALWAYS"
+        cls, label = "allowed", "已自动永久允许"
     elif decision == "reject_once":
-        cls, label = "denied", "AUTO REJECT ONCE"
+        cls, label = "denied", "已自动拒绝"
     else:
         raise AssertionError(f"unhandled PermissionMode: {decision!r}")
 
     header_parts = [_tag(label, cls)]
     if tool_kind is not None:
         header_parts.append(_tag(tool_kind, tool_kind))
-    if tool_title is not None:
-        header_parts.append(_text(tool_title))
+    header = f'<div class="cc-perm-head">{"".join(header_parts)}</div>'
 
     detail_parts: list[str] = []
+    if tool_title is not None:
+        detail_parts.append(
+            '<section class="cc-perm-section">'
+            '<div class="cc-perm-label">操作</div>'
+            f'<pre class="cc-perm-command">{escape(tool_title, quote=False)}</pre>'
+            "</section>"
+        )
+    if not matched:
+        detail_parts.append(
+            '<section class="cc-perm-section">'
+            '<div class="cc-perm-label">结果</div>'
+            f'<div class="cc-perm-text">策略 <code>{_text(decision)}</code> 没有匹配选项，已取消。</div>'
+            "</section>"
+        )
     if locations:
         items = "".join(
             f"<li>{_text(loc.path)}{f':{loc.line}' if loc.line is not None else ''}</li>" for loc in locations
         )
-        detail_parts.append(f'<div class="cc-perm-locations"><b>locations</b><ul>{items}</ul></div>')
+        detail_parts.append(
+            '<section class="cc-perm-section">'
+            '<div class="cc-perm-label">位置</div>'
+            f'<ul class="cc-perm-list">{items}</ul>'
+            "</section>"
+        )
     if content_summary is not None:
-        detail_parts.append(f'<div class="cc-perm-content"><b>content</b> {_text(content_summary)}</div>')
-    if options and decision == "ask":
-        opt_items = "".join(f"<li>{_tag(opt.kind, opt.kind)}{_text(opt.name)}</li>" for opt in options)
-        detail_parts.append(f'<div class="cc-perm-options"><b>options</b><ul>{opt_items}</ul></div>')
-
-    body = "".join(header_parts) + "".join(detail_parts) + hint
+        detail_parts.append(
+            '<section class="cc-perm-section">'
+            '<div class="cc-perm-label">原因</div>'
+            f'<div class="cc-perm-text">{_text(content_summary)}</div>'
+            "</section>"
+        )
+    body = header + "".join(detail_parts) + hint
     return f'<div class="cc-permission cc-permission-{cls}">{body}</div>'
 
 

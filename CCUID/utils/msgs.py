@@ -37,31 +37,25 @@ class QueueMsg:
 
 
 class ChatMsg:
-    NO_PENDING = "当前没有待审批的权限请求\n如果刚发过命令，agent 可能还在思考"
+    NO_PENDING = "没有待审核请求\n刚发过命令时，agent 可能还在处理"
     DESC_FALLBACK = "(无描述)"
     ENGINES_HEADER = "**CCUID Engines**"
 
-    APPROVED_NOTE = "agent 已收到放行，正在继续执行"
-    APPROVED_ALWAYS_NOTE = "agent 缓存放行，同类操作不再询问"
-    DENIED_NOTE = "agent 将放弃此操作"
-
     @classmethod
     def approve_unavailable(cls, target: str, offered: str, desc: str) -> str:
-        return f"agent 未提供 {target}（仅 {offered}）\n→ 已发出协议级 cancelled · {desc}"
+        return f"无法选择 {target}（仅有 {offered}）\n已取消：{desc}"
 
     @classmethod
     def deny_unavailable(cls, offered: str, desc: str) -> str:
-        return f"agent 未提供 reject_once（仅 {offered}）\n→ 已发出协议级 cancelled · {desc}"
+        return f"无法拒绝（仅有 {offered}）\n已取消：{desc}"
 
     @classmethod
-    def approved(cls, desc: str, *, always: bool) -> str:
-        head = "已永久允许" if always else "已允许"
-        note = cls.APPROVED_ALWAYS_NOTE if always else cls.APPROVED_NOTE
-        return f"✓ {head}  {desc}\n{note}"
+    def approved(cls, *, always: bool) -> str:
+        return "已永久允许，agent 继续执行" if always else "已允许，agent 继续执行"
 
     @classmethod
-    def denied(cls, desc: str) -> str:
-        return f"✗ 已拒绝  {desc}\n{cls.DENIED_NOTE}"
+    def denied(cls) -> str:
+        return "已拒绝，agent 已放弃此操作"
 
     @classmethod
     def reset_done(cls, engine: str) -> str:

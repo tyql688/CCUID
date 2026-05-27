@@ -36,7 +36,7 @@
       },
       {
         "name": "命令审批",
-        "desc": "PermissionPolicy=ask 时，agent 申请权限后用此命令审批",
+                "desc": "PermissionPolicy=ask 时，按提示或用命令审核",
         "eg": "允许",
         "need_ck": false,
         "need_sk": false,

@@ -30,6 +30,7 @@ from .render import (
     ImageContext,
     render_to_png,
     build_markdown,
+    engine_icon_url,
     clean_permission_summary,
 )
 from .engines import get_engine
@@ -67,6 +68,9 @@ class RenderContext:
     # session workdir 绝对路径，用于附件路径沙箱（路径必须在 workdir 内才发）。
     # None 时附件检测整体关闭——避免裸路径绕过 sandbox。
     workdir: str | None = None
+    # per-prompt agent 推理耗时 lazy callable；PromptResponse 之前返回 None，
+    # mid-stream flush 时拿到的也是 None —— header 自动不显示。
+    elapsed_resolver: Callable[[], float | None] = field(default=lambda: None)
 
 
 def _chunk_text(c: object) -> str:
@@ -293,7 +297,15 @@ def _should_image_with_format(blocks: list[ChatBlock], fmt: str) -> bool:
 
 async def _render_blocks_to_png(blocks: list[ChatBlock], ctx: RenderContext) -> bytes | None:
     display = get_engine(ctx.engine).display
-    md = build_markdown(blocks, ImageContext(engine_display=display, model_label=ctx.model_resolver()))
+    md = build_markdown(
+        blocks,
+        ImageContext(
+            engine_display=display,
+            model_label=ctx.model_resolver(),
+            elapsed_sec=ctx.elapsed_resolver(),
+            icon_url=engine_icon_url(ctx.engine),
+        ),
+    )
     scale = int(CCUIDConfig.get_config("RenderScale").data)
     return await render_to_png(md, max_width=_IMAGE_MAX_WIDTH, scale=scale)
 

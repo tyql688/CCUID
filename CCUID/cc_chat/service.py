@@ -108,7 +108,16 @@ async def do_chat(bot: Bot, ev: Event, engine: str, prompt: str) -> None:
     def _usage_for_footer():
         return backend.snapshot_usage(meta.sid)
 
-    ctx = RenderContext(ev.bot_id, engine, model_resolver=_model_label, workdir=meta.workdir)
+    def _elapsed_for_header():
+        return backend.snapshot_elapsed(meta.sid)
+
+    ctx = RenderContext(
+        ev.bot_id,
+        engine,
+        model_resolver=_model_label,
+        workdir=meta.workdir,
+        elapsed_resolver=_elapsed_for_header,
+    )
     await render(
         bot,
         REGISTRY.run_prompt(

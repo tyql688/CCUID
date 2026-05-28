@@ -32,6 +32,24 @@ _VENDOR = _ASSETS / "vendor"
 _KATEX_JS = _VENDOR / "katex" / "katex.min.js"
 _KATEX_CSS = _VENDOR / "katex" / "katex.min.css"
 _MERMAID_JS = _VENDOR / "mermaid" / "mermaid.min.js"
+# 复用 cc_help/icon_path/ 下的 engine logo（已 1254x1254 RGBA 对齐过）
+_ENGINE_ICON_DIR = _HERE.parent / "cc_help" / "icon_path"
+
+
+@lru_cache(maxsize=16)
+def engine_icon_url(engine_name: str) -> str | None:
+    """`cc_help/icon_path/{engine}.png` → base64 data URI。文件不存在返回 None。
+
+    用 data URI 不用 `file://`：playwright `set_content()` 加载的 page URL 是
+    about:blank，跨协议加载 file:// 资源被 chromium 默认 block；inline base64
+    跟 vendor css/字体 inline 一个套路，0 网络/0 协议依赖。
+    """
+    p = _ENGINE_ICON_DIR / f"{engine_name}.png"
+    if not p.exists():
+        return None
+    data = base64.b64encode(p.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{data}"
+
 
 _FONT_URL = re.compile(r"url\([\"']?(fonts/[^)\"']+)[\"']?\)")
 
@@ -149,10 +167,23 @@ class ChatBlock:
     meta: dict[str, Any] = field(default_factory=dict)
 
 
+def _format_duration(sec: float) -> str:
+    """230ms / 12.3s / 2m15s。<60s 用秒，>=60 拆 m/s。"""
+    if sec < 1:
+        return f"{int(sec * 1000)}ms"
+    if sec < 60:
+        return f"{sec:.1f}s"
+    m = int(sec // 60)
+    s = int(sec - m * 60)
+    return f"{m}m{s}s"
+
+
 @dataclass(slots=True)
 class ImageContext:
     engine_display: str
     model_label: str | None = None  # e.g. "claude-sonnet-4-7"；None 时隐藏
+    elapsed_sec: float | None = None  # per-prompt agent 推理耗时；None 时隐藏（mid-stream flush 用）
+    icon_url: str | None = None  # engine logo file:// URI；None 时不渲 logo
 
 
 def _tag(label: str, kind: str = "") -> str:
@@ -267,7 +298,16 @@ def _render_permission(block: ChatBlock) -> str:
 
 def build_markdown(blocks: list[ChatBlock], ctx: ImageContext) -> str:
     ts = datetime.now().strftime("%H:%M:%S")
-    top = f'<span class="cc-engine">{_text(ctx.engine_display)}</span><span class="cc-ts">{ts}</span>'
+    elapsed_span = (
+        f'<span class="cc-elapsed">{_format_duration(ctx.elapsed_sec)}</span>' if ctx.elapsed_sec is not None else ""
+    )
+    logo_img = f'<img class="cc-engine-logo" src="{ctx.icon_url}" alt="">' if ctx.icon_url else ""
+    top = (
+        f"{logo_img}"
+        f'<span class="cc-engine">{_text(ctx.engine_display)}</span>'
+        f'<span class="cc-ts">{ts}</span>'
+        f"{elapsed_span}"
+    )
     sub = (
         f'<div class="cc-subheader"><span class="cc-model">{_text(ctx.model_label)}</span></div>'
         if ctx.model_label

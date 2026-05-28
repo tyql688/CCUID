@@ -101,6 +101,8 @@ class ACPSession:
     # backend.prompt 流式 sniff；spec 上 Usage 是 cumulative，跨 prompt 直接覆盖
     last_usage_update: UsageUpdate | None = None
     last_prompt_usage: Usage | None = None
+    # per-prompt agent 推理耗时（_run 起跑 → PromptResponse），含权限审批等待
+    last_prompt_elapsed: float | None = None
 
 
 def format_tail(tail: deque[str]) -> str:
@@ -203,6 +205,11 @@ class ACPBackend:
             return None, ()
         return s.model_id, s.available_models
 
+    def snapshot_elapsed(self, sid: str) -> float | None:
+        """per-prompt agent 推理耗时，PromptResponse 之前返回 None。"""
+        s = self._sess.get(sid)
+        return s.last_prompt_elapsed if s else None
+
     def snapshot_usage(self, sid: str) -> PromptUsage | None:
         s = self._sess.get(sid)
         if s is None:
@@ -265,6 +272,10 @@ class ACPBackend:
             except BaseException as e:  # noqa: BLE001
                 await s.queue.put(e)
 
+        # B 方案 elapsed 起点：_run 起跑（agent 收到 prompt RPC）。终点在 PromptResponse 落入循环时。
+        # mid-stream 期间 last_prompt_elapsed 保持上轮值 / None；render 端只在最终 flush 取值。
+        t0 = time.monotonic()
+        s.last_prompt_elapsed = None
         task = asyncio.create_task(_run())
         try:
             while True:
@@ -279,8 +290,10 @@ class ACPBackend:
                 # sniff before yield —— footer/render 各自消费
                 if isinstance(item, UsageUpdate):
                     s.last_usage_update = item
-                elif isinstance(item, PromptResponse) and item.usage is not None:
-                    s.last_prompt_usage = item.usage
+                elif isinstance(item, PromptResponse):
+                    s.last_prompt_elapsed = time.monotonic() - t0
+                    if item.usage is not None:
+                        s.last_prompt_usage = item.usage
                 yield item
                 if isinstance(item, PromptResponse):
                     return

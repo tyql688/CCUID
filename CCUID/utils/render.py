@@ -9,8 +9,14 @@ from datetime import datetime
 from functools import lru_cache
 from dataclasses import field, dataclass
 
-from markdown import markdown
+from pygments import highlight as _pyg_highlight
+from markdown_it import MarkdownIt
+from pygments.util import ClassNotFound
+from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
+from mdit_py_plugins.gfm import gfm_plugin
 from playwright.async_api import async_playwright
+from mdit_py_plugins.deflist import deflist_plugin
+from pygments.formatters.html import HtmlFormatter
 
 from gsuid_core.logger import logger
 
@@ -31,6 +37,8 @@ _FONT_URL = re.compile(r"url\([\"']?(fonts/[^)\"']+)[\"']?\)")
 
 _PLAYWRIGHT_TIMEOUT_MS = 30_000
 _PLAYWRIGHT_INITIAL_HEIGHT = 100
+# Cursor IDE 行号引用 info string: `<start>:<end>:<path>`
+_CURSOR_REF_RE = re.compile(r"^(\d+):(\d+):(.+)$")
 
 
 def _text(s: str) -> str:
@@ -49,44 +57,76 @@ def clean_permission_summary(summary: str | None) -> str | None:
     return text
 
 
-def _format_mermaid(
-    source: str, language: str, class_name: str, options: dict[str, Any], md: Any, **kwargs: Any
-) -> str:
-    return f'<pre class="mermaid">{escape(source, quote=False)}</pre>'
+_PYG_FORMATTER = HtmlFormatter(cssclass="highlight", style="friendly", nowrap=True)
 
 
-_MARKDOWN_EXTENSIONS = (
-    "extra",
-    "sane_lists",
-    "pymdownx.highlight",
-    "pymdownx.tilde",
-    "pymdownx.tasklist",
-    "pymdownx.arithmatex",
-    "pymdownx.superfences",
-)
-_MARKDOWN_EXTENSION_CONFIGS: dict[str, Any] = {
-    "pymdownx.highlight": {
-        "use_pygments": True,
-        "guess_lang": False,
-        "default_lang": "text",
-        "noclasses": False,
-        "css_class": "highlight",
-        "pygments_style": "friendly",
-        "auto_title": True,
-        "auto_title_map": {"Text Only": "text"},
-    },
-    "pymdownx.tasklist": {"custom_checkbox": True},
-    "pymdownx.arithmatex": {"generic": True},
-    "pymdownx.superfences": {
-        "custom_fences": [
-            {
-                "name": "mermaid",
-                "class": "mermaid",
-                "format": _format_mermaid,
-            }
-        ]
-    },
-}
+def _resolve_caption_and_lexer(name: str) -> tuple[str | None, Any]:
+    """info string → (caption_or_None, lexer_or_None)
+    * Cursor 行号引用 `<start>:<end>:<path>` → caption=路径行号, lexer 按 path
+    * 已知 lang                             → caption=None (无 figure 包裹), lexer
+    * 未知 lang                             → caption=lang, lexer=None
+    * 无                                    → (None, None)
+    """
+    if not name:
+        return None, None
+    cursor_ref = _CURSOR_REF_RE.match(name)
+    if cursor_ref:
+        start, end, path = cursor_ref.groups()
+        caption = f"{path} :{start}-{end}"
+        try:
+            return caption, get_lexer_for_filename(path)
+        except ClassNotFound:
+            return caption, None
+    try:
+        return None, get_lexer_by_name(name)
+    except ClassNotFound:
+        return name, None
+
+
+def _highlight_fence(code: str, name: str, _attrs: str) -> str:
+    """markdown-it-py fence renderer。统一 DOM：
+      * mermaid    → `<pre class="mermaid">` （前端处理，不进 figure）
+      * 无 caption → `<pre[.highlight]><code>...</code></pre>` (2 层)
+      * 有 caption → `<figure class="cc-code"><figcaption>...</figcaption>` + 上述 → 3 层
+
+    pygments 用 `nowrap=True` 只输出 token spans，由我们自己包 pre.highlight；
+    CSS `.highlight .k` 等子选择器在 pre 是 .highlight 时仍匹配。
+    """
+    name = name.strip()
+    if name.lower() == "mermaid":
+        return f'<pre class="mermaid">{escape(code, quote=False)}</pre>'
+    caption, lexer = _resolve_caption_and_lexer(name)
+    if lexer is not None:
+        body = f'<pre class="highlight"><code>{_pyg_highlight(code, lexer, _PYG_FORMATTER)}</code></pre>'
+    else:
+        body = f"<pre><code>{escape(code, quote=False)}</code></pre>"
+    if caption is None:
+        return body
+    return f'<figure class="cc-code"><figcaption>{escape(caption)}</figcaption>{body}</figure>'
+
+
+def _build_md_engine() -> MarkdownIt:
+    """commonmark + GFM 全套 (gfm_plugin: table/strikethrough/autolink/tasklist/
+    alerts/footnote + dollarmath) + deflist。行为对齐 cc-session 的 remark-gfm。
+
+    要点：
+    * GFM 严格语义——表格遇到下一行不含 `|` 会关闭，不会卷吞后文（旧 python-markdown
+      的 tables 扩展不严格，会把 `---` / `## H2` / mermaid 块全卷进 `<td>`）。
+    * `html=True`：`build_markdown` 把 `<div class="cc-header">` chrome 拼进 markdown
+      字符串，需要 raw HTML pass-through；agent 偶尔也发 `<br/>`。
+    * dollarmath 输出 `<span class="math inline">` / `<div class="math block">`，
+      chat.js 找这两个 class 渲染 katex。
+    * `> [!NOTE]` / `[!WARNING]` 等 GFM alert 内置支持，渲为
+      `<div class="markdown-alert markdown-alert-note">`。
+    """
+    md = MarkdownIt("commonmark", {"highlight": _highlight_fence, "html": True, "linkify": True})
+    md.enable("linkify")
+    md.use(gfm_plugin, dollarmath=True)
+    md.use(deflist_plugin)
+    return md
+
+
+_MD_ENGINE = _build_md_engine()
 
 BlockKind = Literal[
     "agent_md",
@@ -98,6 +138,7 @@ BlockKind = Literal[
     "mode",
     "error",
     "permission",
+    "usage_footer",
 ]
 
 
@@ -157,6 +198,8 @@ def _render_block(block: ChatBlock) -> str:
         return f'<div class="cc-error">{_tag("error", "failed")}<pre class="cc-error-body">{body}</pre></div>'
     if block.kind == "permission":
         return _render_permission(block)
+    if block.kind == "usage_footer":
+        return f'<div class="cc-usage-footer">{_text(block.body)}</div>'
     return _text(block.body)
 
 
@@ -273,12 +316,7 @@ def _pygments_css() -> str:
 
 
 def _html_doc(md: str) -> str:
-    body = markdown(
-        md,
-        extensions=list(_MARKDOWN_EXTENSIONS),
-        extension_configs=_MARKDOWN_EXTENSION_CONFIGS,
-        output_format="html",
-    )
+    body = _MD_ENGINE.render(md)
     css = f"{_katex_css()}{_chat_css()}{_pygments_css()}"
     return (
         _chat_html().replace("{{ asset_base }}", _ASSETS.as_uri()).replace("{{ css }}", css).replace("{{ body }}", body)
@@ -286,7 +324,7 @@ def _html_doc(md: str) -> str:
 
 
 async def _render_extras(page: Page) -> None:
-    has_math = await page.locator(".arithmatex").count() > 0
+    has_math = await page.locator(".math").count() > 0
     has_mermaid = await page.locator("pre.mermaid").count() > 0
     if not has_math and not has_mermaid:
         return

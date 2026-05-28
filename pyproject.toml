@@ -6,16 +6,16 @@ build-backend = "pdm.backend"
 name = "CCUID"
 version = "1.0.0"
 description = "通过 ACP 调用 Claude Code / Codex 等 coding agent 的 gsuid_core 插件"
-authors = [{name = "tyql688"}]
+authors = [{ name = "tyql688" }]
 readme = "README.md"
-license = {text = "GPL-3.0-or-later"}
+license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.11, <4.0"
 dependencies = [
     "agent-client-protocol>=0.10",
-    "markdown>=3.10",
-    "playwright>=1.58.0",
+    "linkify-it-py>=2.0",
+    "markdown-it-py>=4.2.0",
+    "mdit-py-plugins>=0.6",
     "pygments>=2.19.2",
-    "pymdown-extensions>=10.21.0",
 ]
 
 [tool.pyright]

@@ -34,24 +34,27 @@ from .render import (
 )
 from .engines import get_engine
 from .acp.events import PermissionEvent, PermissionOptionView
-from .acp.backend import BackendError
+from .acp.backend import PromptUsage, BackendError
 from ..cc_config.cc_config import CCUIDConfig
 
 _AUTO_IMAGE_THRESHOLD = 600
 _IMAGE_MAX_WIDTH = 720
 
-# 故意不消费的 ACP 事件类型——_classify 走完 case 都不匹配时静默 drop。
-# ToolCallProgress 例外：failed / full 模式有显式分支，否则也 drop。
-# 不在此列表里的未知类型走 logger.debug，方便协议升级时排查。
+# 故意不消费的事件——_classify 落到这里的静默 drop；其它陌生类型 log 一次。
+# ToolCallProgress / UsageUpdate / AgentThoughtChunk 都有显式分支，不进此表。
 _KNOWN_UNUSED_EVENTS: tuple[type, ...] = (
-    UsageUpdate,
     SessionInfoUpdate,
     AvailableCommandsUpdate,
     ToolCallProgress,
     UserMessageChunk,
-    AgentThoughtChunk,
 )
 _warned_event_types: set[str] = set()
+
+
+# 流式 chunk → fragment，由 render() 累积成单个 ChatBlock，避免 token-level 切片
+# （cursor 86 / opencode 61 块/轮）被渲成几十条独立行
+StreamKind = Literal["agent", "think"]
+StreamFragment = tuple[StreamKind, str]
 
 
 @dataclass(slots=True)
@@ -94,26 +97,33 @@ def _permission_block(ev: PermissionEvent) -> ChatBlock:
 ToolDisplayMode = Literal["off", "brief", "full"]
 
 
-def _classify(ev: object, show_thinking: bool, tool_display: ToolDisplayMode) -> ChatBlock | str | None:
+def _classify(
+    ev: object,
+    show_thinking: bool,
+    tool_display: ToolDisplayMode,
+) -> ChatBlock | StreamFragment | None:
     """Single source of truth for ACP-event → CCUID-output mapping.
 
     Returns:
-      * str            — append to current agent_md buffer (streamed text)
-      * ChatBlock      — flush agent_md, emit this block
+      * StreamFragment ("agent"|"think", text) — append to the matching stream
+                       buffer; flush on next non-stream / different-kind event
+      * ChatBlock      — flush both stream buffers, emit this block
       * None           — uninteresting (drop or wait for next)
 
-    Callers spot `PromptResponse` and `BackendError` themselves — both terminate
-    the stream and we don't want to leak that protocol detail into here."""
+    Callers spot `PromptResponse` / `UsageUpdate` / `BackendError` themselves —
+    they terminate or footer-feed the stream and we don't want to leak that
+    protocol detail into here."""
     show_tools = tool_display != "off"
     if isinstance(ev, AgentMessageChunk):
         # agent 直接吐图（ACP ImageContentBlock）—— base64 inline data
         if isinstance(ev.content, ImageContentBlock):
             return ChatBlock("agent_image", "", meta={"data": ev.content.data, "mime_type": ev.content.mime_type})
         text = _chunk_text(ev.content)
-        return text if text else None
+        return ("agent", text) if text else None
     if isinstance(ev, AgentThoughtChunk) and show_thinking:
+        # token-level 切片，必须走 fragment 累积，见 rules.md 「思考流渲染」
         text = _chunk_text(ev.content)
-        return ChatBlock("think", text) if text else None
+        return ("think", text) if text else None
     if isinstance(ev, ToolCallStart) and show_tools:
         # 同一个 toolCallId 经常 emit 两次（先 generic title 再具体 title）
         kind = ev.kind if ev.kind is not None else "other"
@@ -142,6 +152,12 @@ def _classify(ev: object, show_thinking: bool, tool_display: ToolDisplayMode) ->
         return ChatBlock("mode", ev.current_mode_id)
     if isinstance(ev, PermissionEvent):
         return _permission_block(ev)
+    # UsageUpdate 在 render() 末尾走 footer 路径，这里显式 None 不计入未知类型。
+    if isinstance(ev, UsageUpdate):
+        return None
+    # AgentThoughtChunk 当用户关 ShowThinking 时也走这里 → 静默 drop。
+    if isinstance(ev, AgentThoughtChunk):
+        return None
     # 未消费的事件类型：known-unused 静默；其它陌生类型每种 log 一次。
     if not isinstance(ev, _KNOWN_UNUSED_EVENTS):
         name = type(ev).__name__
@@ -196,6 +212,8 @@ def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
         elif block.kind == "mode":
             out.append(f"mode: {block.body}")
         elif block.kind == "error":
+            out.append(block.body)
+        elif block.kind == "usage_footer":
             out.append(block.body)
         elif block.kind == "permission":
             decision = block.meta["decision"]
@@ -397,7 +415,26 @@ async def _send_agent_images(bot: Bot, blocks: list[ChatBlock]) -> None:
         await bot.send(MessageSegment.image(data))
 
 
-async def render(bot: Bot, events: AsyncIterator[Any], ctx: RenderContext) -> None:
+def _format_usage_footer(usage: PromptUsage) -> str:
+    parts: list[str] = []
+    if usage.input_tokens is not None:
+        parts.append(f"input {usage.input_tokens}")
+    if usage.output_tokens is not None:
+        parts.append(f"output {usage.output_tokens}")
+    if usage.cached_read_tokens is not None:
+        parts.append(f"cached_read {usage.cached_read_tokens}")
+    if usage.cached_write_tokens is not None:
+        parts.append(f"cached_write {usage.cached_write_tokens}")
+    return " · ".join(parts)
+
+
+async def render(
+    bot: Bot,
+    events: AsyncIterator[Any],
+    ctx: RenderContext,
+    *,
+    usage_provider: Callable[[], PromptUsage | None] | None = None,
+) -> None:
     """Stream events into blocks; flush mid-stream when an `ask`-mode permission
     request appears so the user can actually answer it before the agent's RPC
     times out (otherwise the whole conversation deadlocks: agent waits for
@@ -405,14 +442,19 @@ async def render(bot: Bot, events: AsyncIterator[Any], ctx: RenderContext) -> No
 
     Strategy:
       - accumulate `agent_md` / `tool` / `plan` / etc into a single batch
-      - on `PermissionEvent`: flush the accumulated batch, then emit the
-        approval card as its own message, then continue
-      - on stream end: flush whatever is left."""
+      - stream fragments ("agent" / "think") 各自累积到 agent_buf / thought_buf；
+        遇到非匹配 kind（含 ChatBlock / 流末）时 flush 对应 buf 成完整 ChatBlock
+      - on `PermissionEvent`: flush all buffers, emit the approval card, continue
+      - on stream end: flush whatever is left + 追加 usage footer（如有数据）
+
+    `usage_provider` 拿到 PromptUsage 后渲染 footer；返回 None 表示该 engine 不报
+    数据（claude/cursor）→ 不显示 footer。spec 上 Usage 是 session 累积值。"""
     show_thinking = bool(CCUIDConfig.get_config("ShowThinking").data)
     tool_display: ToolDisplayMode = CCUIDConfig.get_config("ToolDisplay").data
     show_auto_perms = bool(CCUIDConfig.get_config("ShowAutoPermissions").data)
     pending: list[ChatBlock] = []
     agent_buf: list[str] = []
+    thought_buf: list[str] = []
 
     def flush_agent() -> None:
         text = "".join(agent_buf).strip()
@@ -420,8 +462,19 @@ async def render(bot: Bot, events: AsyncIterator[Any], ctx: RenderContext) -> No
             pending.append(ChatBlock("agent_md", text))
         agent_buf.clear()
 
-    async def flush_pending() -> None:
+    def flush_thought() -> None:
+        text = "".join(thought_buf).strip()
+        if text:
+            pending.append(ChatBlock("think", text))
+        thought_buf.clear()
+
+    def flush_streams() -> None:
+        """Both buffers; order: thought 先（先思考再答），agent 后。"""
+        flush_thought()
         flush_agent()
+
+    async def flush_pending() -> None:
+        flush_streams()
         if pending:
             await _send_blocks(bot, pending, ctx)
             pending.clear()
@@ -433,8 +486,15 @@ async def render(bot: Bot, events: AsyncIterator[Any], ctx: RenderContext) -> No
             out = _classify(ev, show_thinking, tool_display)
             if out is None:
                 continue
-            if isinstance(out, str):
-                agent_buf.append(out)
+            if isinstance(out, tuple):
+                # StreamFragment: 累积到对应 buf；切 kind 时 flush 另一边
+                kind, text = out
+                if kind == "agent":
+                    flush_thought()
+                    agent_buf.append(text)
+                else:
+                    flush_agent()
+                    thought_buf.append(text)
                 continue
             # ChatBlock —— PermissionEvent 是唯一要 mid-stream flush 的；其它
             # 累到下次 flush_pending。理由见函数 docstring 顶部。
@@ -450,12 +510,22 @@ async def render(bot: Bot, events: AsyncIterator[Any], ctx: RenderContext) -> No
                 else:
                     await _send_blocks(bot, [out], ctx)
             else:
-                flush_agent()
+                flush_streams()
                 _append_or_replace_tool(pending, out)
     except BackendError as e:
-        flush_agent()
+        flush_streams()
         pending.append(ChatBlock("error", str(e)))
     except Exception:
         logger.exception(f"[CCUID/{ctx.engine}] event stream crashed")
 
-    await flush_pending()
+    # footer 跟主输出一起 flush：图模式渲进图底部、text 模式追在末尾
+    flush_streams()
+    if usage_provider is not None:
+        usage = usage_provider()
+        if usage is not None:
+            line = _format_usage_footer(usage)
+            if line:
+                pending.append(ChatBlock("usage_footer", line))
+    if pending:
+        await _send_blocks(bot, pending, ctx)
+        pending.clear()

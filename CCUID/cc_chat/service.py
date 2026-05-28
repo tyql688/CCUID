@@ -105,6 +105,9 @@ async def do_chat(bot: Bot, ev: Event, engine: str, prompt: str) -> None:
         mid, mname = backend.get_model(meta.sid)
         return mname if mname is not None else mid
 
+    def _usage_for_footer():
+        return backend.snapshot_usage(meta.sid)
+
     ctx = RenderContext(ev.bot_id, engine, model_resolver=_model_label, workdir=meta.workdir)
     await render(
         bot,
@@ -116,6 +119,7 @@ async def do_chat(bot: Bot, ev: Event, engine: str, prompt: str) -> None:
             preview=_make_preview(prompt),
         ),
         ctx,
+        usage_provider=_usage_for_footer,
     )
 
 

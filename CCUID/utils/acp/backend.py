@@ -15,6 +15,8 @@ from acp import (
     connect_to_agent,
 )
 from acp.schema import (
+    Usage,
+    UsageUpdate,
     Implementation,
     PromptResponse,
     SessionModelState,
@@ -52,6 +54,35 @@ class BackendError(Exception):
     pass
 
 
+@dataclass(slots=True, frozen=True)
+class PromptUsage:
+    """ACP 累积 usage 快照。任一字段 None 表示 agent 没给——provider 能力矩阵见 rules.md。"""
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_read_tokens: int | None = None
+    cached_write_tokens: int | None = None
+    thought_tokens: int | None = None
+    total_tokens: int | None = None
+    ctx_used: int | None = None
+    ctx_size: int | None = None
+    cost_amount: float | None = None
+    cost_currency: str | None = None
+
+    @property
+    def has_any_data(self) -> bool:
+        return any(
+            v is not None
+            for v in (
+                self.input_tokens,
+                self.output_tokens,
+                self.total_tokens,
+                self.ctx_used,
+                self.cost_amount,
+            )
+        )
+
+
 @dataclass(slots=True)
 class ACPSession:
     proc: asyncio.subprocess.Process
@@ -67,6 +98,9 @@ class ACPSession:
     # agent 在 new/load_session 响应里同时给出整张目录 (model_id, name) 对。
     # `cc 模型` 命令拿这个列；不变就别重拉，session 期间稳定。
     available_models: tuple[tuple[str, str], ...] = ()
+    # backend.prompt 流式 sniff；spec 上 Usage 是 cumulative，跨 prompt 直接覆盖
+    last_usage_update: UsageUpdate | None = None
+    last_prompt_usage: Usage | None = None
 
 
 def format_tail(tail: deque[str]) -> str:
@@ -169,6 +203,29 @@ class ACPBackend:
             return None, ()
         return s.model_id, s.available_models
 
+    def snapshot_usage(self, sid: str) -> PromptUsage | None:
+        s = self._sess.get(sid)
+        if s is None:
+            return None
+        update = s.last_usage_update
+        usage = s.last_prompt_usage
+        if update is None and usage is None:
+            return None
+        cost = update.cost if update is not None else None
+        snap = PromptUsage(
+            input_tokens=usage.input_tokens if usage is not None else None,
+            output_tokens=usage.output_tokens if usage is not None else None,
+            cached_read_tokens=usage.cached_read_tokens if usage is not None else None,
+            cached_write_tokens=usage.cached_write_tokens if usage is not None else None,
+            thought_tokens=usage.thought_tokens if usage is not None else None,
+            total_tokens=usage.total_tokens if usage is not None else None,
+            ctx_used=update.used if update is not None else None,
+            ctx_size=update.size if update is not None else None,
+            cost_amount=cost.amount if cost is not None else None,
+            cost_currency=cost.currency if cost is not None else None,
+        )
+        return snap if snap.has_any_data else None
+
     async def set_model(self, sid: str, model_id: str) -> tuple[str, str] | None:
         """切到目录内的 model_id。SetSessionModelResponse 是空响应，本地直接更新缓存的
         (model_id, name)。目录里没有这条返回 None，让上层报 not found。"""
@@ -219,6 +276,11 @@ class ACPBackend:
                     # prompt 阶段错误（如 codex 的 TLS reconnect 重试）：不附 stderr，
                     # 那一坨 noise 进 gscore 日志已经够开发者排查，用户错误卡只看主因
                     raise BackendError(str(item)) from item
+                # sniff before yield —— footer/render 各自消费
+                if isinstance(item, UsageUpdate):
+                    s.last_usage_update = item
+                elif isinstance(item, PromptResponse) and item.usage is not None:
+                    s.last_prompt_usage = item.usage
                 yield item
                 if isinstance(item, PromptResponse):
                     return

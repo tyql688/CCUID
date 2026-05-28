@@ -68,7 +68,13 @@ class ACPClient(Client):
         tool_call: ToolCallUpdate,
     ) -> RequestPermissionResponse:
         """Lazy import SessionRegistry — `session.py` imports the acp package
-        for ACPBackend, so importing it at module load would cycle."""
+        for ACPBackend, so importing it at module load would cycle.
+
+        `try/finally` 必须包 `cancel_pending`：原先只 catch TimeoutError 会让
+        CancelledError（session restart / LRU evict / shutdown 触发）直接传播，
+        future 永远留在 REGISTRY._pending 里造成泄漏。cancel_pending 内部 by
+        identity 找 future，幂等——take_pending 已 pop 的情况下也安全。
+        """
         from ..session import REGISTRY
 
         await self._queue.put(build_event("ask", tool_call, options, matched=True))
@@ -77,8 +83,9 @@ class ACPClient(Client):
         try:
             option_id = await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError:
-            REGISTRY.cancel_pending(self._sid, future)
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+        finally:
+            REGISTRY.cancel_pending(self._sid, future)
         if option_id is None:
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
         return RequestPermissionResponse(

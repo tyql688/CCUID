@@ -86,6 +86,22 @@
         "need_ck": false,
         "need_sk": false,
         "need_admin": false
+      },
+      {
+        "name": "切换到kimi",
+        "desc": "切到kimi engine",
+        "eg": "eng kimi",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "切换到gemini",
+        "desc": "切到gemini engine",
+        "eg": "eng gemini",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
       }
     ]
   },

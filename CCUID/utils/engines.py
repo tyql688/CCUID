@@ -36,6 +36,18 @@ ENGINES: dict[str, EngineSpec] = {
             ("opencode", "acp"),
             install_url="https://opencode.ai/docs/acp/",
         ),
+        EngineSpec(
+            "kimi",
+            "Kimi Code CLI",
+            ("kimi", "acp"),
+            install_url="https://moonshotai.github.io/kimi-cli/en/guides/getting-started.html",
+        ),
+        EngineSpec(
+            "gemini",
+            "Gemini CLI",
+            ("gemini", "--acp"),
+            install_url="https://geminicli.com/docs/cli/acp-mode/",
+        ),
     )
 }
 

@@ -24,12 +24,14 @@
 
 ## 支持的 engines
 
-| Engine     | 启动命令                                 | 安装/登录                                                            |
-| ---------- | ---------------------------------------- | -------------------------------------------------------------------- |
-| `claude`   | `npx -y @zed-industries/claude-code-acp` | [claude-code-acp](https://github.com/zed-industries/claude-code-acp) |
-| `codex`    | `npx -y @zed-industries/codex-acp`       | [codex-acp](https://github.com/zed-industries/codex-acp)             |
-| `cursor`   | `cursor-agent acp`                       | [cursor CLI](https://docs.cursor.com/cli/installation)               |
-| `opencode` | `opencode acp`                           | [opencode](https://opencode.ai/docs/acp/)                            |
+| Engine     | 启动命令                                 | 安装/登录                                                                             |
+| ---------- | ---------------------------------------- | ------------------------------------------------------------------------------------- |
+| `claude`   | `npx -y @zed-industries/claude-code-acp` | [claude-code-acp](https://github.com/zed-industries/claude-code-acp)                  |
+| `codex`    | `npx -y @zed-industries/codex-acp`       | [codex-acp](https://github.com/zed-industries/codex-acp)                              |
+| `cursor`   | `cursor-agent acp`                       | [cursor CLI](https://docs.cursor.com/cli/installation)                                |
+| `opencode` | `opencode acp`                           | [opencode](https://opencode.ai/docs/acp/)                                             |
+| `kimi`     | `kimi acp`                               | [Kimi Code CLI](https://moonshotai.github.io/kimi-cli/en/guides/getting-started.html) |
+| `gemini`   | `gemini --acp`                           | [Gemini CLI ACP mode](https://geminicli.com/docs/cli/acp-mode/)                       |
 
 ## 其他工具
 
@@ -57,6 +59,7 @@ npx -y @zed-industries/codex-acp --version
 
 - 首次使用前用对应 CLI 完成登录。
 - **装完 agent CLI 后必须重启 gscore**，并且要在**新开的终端**里启动——已经跑着的 gscore 读不到新 CLI 的 PATH，会让 `cc doctor` 误报 missing。
+- ⚠ Gemini CLI 2026-06-18 起对 Google One / 免费层用户停服；Antigravity CLI 暂不支持 ACP。
 - 如需只让 agent CLI 走代理，在 CCUID 配置里设置：
 
   ```text
@@ -67,6 +70,7 @@ npx -y @zed-industries/codex-acp --version
   ```
 
   `AgentProxyMode=false` 默认不注入；`true` 按 `AgentProxyAgents` 注入，`["all"]` 表示全部，留空表示不注入。改完重启 gscore，或执行 `cc new`。
+
 - OpenCode 的模型由它自己的 `~/.config/opencode/opencode.jsonc` 决定，具体 [issue](https://github.com/anomalyco/opencode/issues/4001)。没显式写 `model` 时，`opencode acp` 会使用 OpenCode 默认模型，常见显示为 `OpenCode Zen/Big Pickle`。需要固定模型就写：
 
   ```jsonc

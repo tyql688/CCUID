@@ -84,7 +84,7 @@ class ChatMsg:
 
 class ModelMsg:
     NO_SESSION = "session 未启动，先发条 prompt 让 agent 起来再查 model"
-    NO_MODELS = "当前 engine 没返回 model 列表（老版本 ACP adapter）"
+    NO_MODELS = "当前 engine 没返回 model 列表"
 
     @classmethod
     def header(cls, engine: str, total: int) -> str:

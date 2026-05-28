@@ -80,7 +80,7 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         "使用代理的 Agent CLI",
         "AgentProxyMode 开启时只给这些 agent 注入代理；all=全部；空列表=不注入任何 agent",
         [],
-        options=["all", "claude", "codex", "cursor", "opencode"],
+        options=["all", "claude", "codex", "cursor", "opencode", "kimi", "gemini"],
     ),
     "AgentNoProxy": GsStrConfig(
         "Agent CLI 不走代理地址",

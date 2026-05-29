@@ -23,8 +23,7 @@ async def list_grants(bot: Bot, ev: Event) -> None:
 
 
 # 一个 regex router 同时覆盖：授权 / 取消授权 / 授权群 / 取消授权群。
-# 结尾 `$` 锚定避免 prefix `授权` 吞 `授权列表` / `授权群组` 这种意外文本。
-@sv_admin.on_regex(r"^(?P<action>取消)?授权(?P<target>群)?(?:\s+(?P<arg>.+))?$", block=True)
+@sv_admin.on_regex(r"^(?P<action>取消)?授权(?P<target>群)?\s*(?P<arg>.+)?$", block=True)
 async def admin_router(bot: Bot, ev: Event) -> None:
     # 把命令字剥完后的参数写回 ev.text，让下游 run_* 拿到不带命令字的原参数。
     arg = ev.regex_dict.get("arg")

@@ -38,12 +38,10 @@ _ENGINE_ICON_DIR = _HERE.parent / "cc_help" / "icon_path"
 
 @lru_cache(maxsize=16)
 def engine_icon_url(engine_name: str) -> str | None:
-    """`cc_help/icon_path/{engine}.png` → base64 data URI。文件不存在返回 None。
+    """`cc_help/icon_path/{engine}.png` → base64 data URI，文件不存在返回 None。
 
-    用 data URI 不用 `file://`：playwright `set_content()` 加载的 page URL 是
-    about:blank，跨协议加载 file:// 资源被 chromium 默认 block；inline base64
-    跟 vendor css/字体 inline 一个套路，0 网络/0 协议依赖。
-    """
+    用 data URI 不用 `file://`：set_content() 的 page URL 是 about:blank，chromium 默认 block 跨协议
+    file:// 资源；inline base64 跟 vendor css/字体同套路，0 网络/0 协议依赖。"""
     p = _ENGINE_ICON_DIR / f"{engine_name}.png"
     if not p.exists():
         return None
@@ -102,14 +100,9 @@ def _resolve_caption_and_lexer(name: str) -> tuple[str | None, Any]:
 
 
 def _highlight_fence(code: str, name: str, _attrs: str) -> str:
-    """markdown-it-py fence renderer。统一 DOM：
-      * mermaid    → `<pre class="mermaid">` （前端处理，不进 figure）
-      * 无 caption → `<pre[.highlight]><code>...</code></pre>` (2 层)
-      * 有 caption → `<figure class="cc-code"><figcaption>...</figcaption>` + 上述 → 3 层
-
-    pygments 用 `nowrap=True` 只输出 token spans，由我们自己包 pre.highlight；
-    CSS `.highlight .k` 等子选择器在 pre 是 .highlight 时仍匹配。
-    """
+    """markdown-it-py fence renderer。统一 DOM：mermaid → `<pre class="mermaid">`（前端处理）；
+    无 caption → `<pre[.highlight]><code>`（2 层）；有 caption → 外包 `<figure class="cc-code">`（3 层）。
+    pygments `nowrap=True` 只出 token spans，自己包 pre.highlight，CSS `.highlight .k` 子选择器仍匹配。"""
     name = name.strip()
     if name.lower() == "mermaid":
         return f'<pre class="mermaid">{escape(code, quote=False)}</pre>'
@@ -124,18 +117,13 @@ def _highlight_fence(code: str, name: str, _attrs: str) -> str:
 
 
 def _build_md_engine() -> MarkdownIt:
-    """commonmark + GFM 全套 (gfm_plugin: table/strikethrough/autolink/tasklist/
-    alerts/footnote + dollarmath) + deflist。行为对齐 cc-session 的 remark-gfm。
+    """commonmark + GFM 全套（table/strikethrough/autolink/tasklist/alerts/footnote + dollarmath）+ deflist。
 
     要点：
-    * GFM 严格语义——表格遇到下一行不含 `|` 会关闭，不会卷吞后文（旧 python-markdown
-      的 tables 扩展不严格，会把 `---` / `## H2` / mermaid 块全卷进 `<td>`）。
-    * `html=True`：`build_markdown` 把 `<div class="cc-header">` chrome 拼进 markdown
-      字符串，需要 raw HTML pass-through；agent 偶尔也发 `<br/>`。
-    * dollarmath 输出 `<span class="math inline">` / `<div class="math block">`，
-      chat.js 找这两个 class 渲染 katex。
-    * `> [!NOTE]` / `[!WARNING]` 等 GFM alert 内置支持，渲为
-      `<div class="markdown-alert markdown-alert-note">`。
+    * GFM 严格表格语义：下一行不含 `|` 即关闭，不卷吞后文（旧 python-markdown 会把 `---`/`## H2`/mermaid 卷进 `<td>`）。
+    * `html=True`：build_markdown 把 `<div class="cc-header">` chrome 拼进字符串，需 raw HTML pass-through。
+    * dollarmath → `<span/div class="math ...">`，chat.js 据此渲 katex。
+    * `> [!NOTE]` 等 alert → `<div class="markdown-alert ...">`。
     """
     md = MarkdownIt("commonmark", {"highlight": _highlight_fence, "html": True, "linkify": True})
     md.enable("linkify")
@@ -181,9 +169,9 @@ def _format_duration(sec: float) -> str:
 @dataclass(slots=True)
 class ImageContext:
     engine_display: str
-    model_label: str | None = None  # e.g. "claude-sonnet-4-7"；None 时隐藏
-    elapsed_sec: float | None = None  # per-prompt agent 推理耗时；None 时隐藏（mid-stream flush 用）
-    icon_url: str | None = None  # engine logo file:// URI；None 时不渲 logo
+    model_label: str | None = None  # e.g. "claude-sonnet-4-7"；None 隐藏
+    elapsed_sec: float | None = None  # per-prompt 推理耗时；None 隐藏（mid-stream flush 用）
+    icon_url: str | None = None  # engine logo data URI；None 不渲 logo
 
 
 def _tag(label: str, kind: str = "") -> str:
@@ -191,8 +179,7 @@ def _tag(label: str, kind: str = "") -> str:
     return f'<span class="{cls}">{_text(label)}</span>'
 
 
-# agent 流式 chunks 裸 join 时 `out## title` 会被 markdown 当成 prose；强制
-# 在标题前插换行。`[^\n#]` 排除 `#` 避免误拆 `##` / `###` 连续标记
+# 裸 join 时 `out## title` 会被当 prose；标题前强制插换行。`[^\n#]` 排除 `#` 免拆 `##`/`###`
 _HEADING_INLINE = re.compile(r"([^\n#])(#{1,6}\s+)")
 _BLOCK_MARKER = re.compile(r"^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>\s|```)")
 

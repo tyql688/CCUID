@@ -45,8 +45,7 @@ _PROXY_URL_ENV_KEYS = (
     "all_proxy",
 )
 _NO_PROXY_ENV_KEYS = ("NO_PROXY", "no_proxy")
-# ACP 握手 (initialize + new_session / load_session) 总超时。
-# 单子进程 stdin/stdout 卡死时不让 prompt 永久挂；npx 冷启动也要兜得住。
+# ACP 握手 (initialize + new/load_session) 总超时：子进程 stdin/stdout 卡死时不让 prompt 永久挂，也兜 npx 冷启动。
 _HANDSHAKE_TIMEOUT_SEC = 60
 
 
@@ -56,7 +55,7 @@ class BackendError(Exception):
 
 @dataclass(slots=True, frozen=True)
 class PromptUsage:
-    """ACP 累积 usage 快照。任一字段 None 表示 agent 没给——provider 能力矩阵见 rules.md。"""
+    """ACP 累积 usage 快照。任一字段 None 表示 agent 没给（各 provider 上报能力不同）。"""
 
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -91,17 +90,15 @@ class ACPSession:
     queue: asyncio.Queue[Any]
     client: ACPClient
     stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=_STDERR_TAIL_LINES))
-    # current_model_id / display set from new_session / load_session response.
-    # `None` 表示 agent 没声明 models 字段(老 adapter)；渲染层据此决定是否展示。
+    # new/load_session 响应里的当前模型；None = agent 没声明 models（老 adapter），渲染层据此决定是否展示。
     model_id: str | None = None
     model_name: str | None = None
-    # agent 在 new/load_session 响应里同时给出整张目录 (model_id, name) 对。
-    # `cc 模型` 命令拿这个列；不变就别重拉，session 期间稳定。
+    # new/load_session 给的整张模型目录 (model_id, name)；`cc 模型` 用，session 期间稳定不重拉。
     available_models: tuple[tuple[str, str], ...] = ()
-    # backend.prompt 流式 sniff；spec 上 Usage 是 cumulative，跨 prompt 直接覆盖
+    # backend.prompt 流式 sniff；Usage 是 cumulative，跨 prompt 直接覆盖
     last_usage_update: UsageUpdate | None = None
     last_prompt_usage: Usage | None = None
-    # per-prompt agent 推理耗时（_run 起跑 → PromptResponse），含权限审批等待
+    # per-prompt 推理耗时（_run 起跑 → PromptResponse），含权限审批等待
     last_prompt_elapsed: float | None = None
 
 
@@ -112,9 +109,8 @@ def format_tail(tail: deque[str]) -> str:
 
 
 def _resolve_launcher(cmd: tuple[str, ...]) -> tuple[str, ...]:
-    """把 cmd[0] 解析成绝对路径再交给 subprocess。Windows 上 asyncio 的
-    CreateProcessW 不走 PATHEXT，传 `npx` 会 WinError 2 找不到（实际是 `npx.cmd`）；
-    shutil.which 自己懂 PATHEXT，所以无论平台都靠它兜底。绝对路径直接通过。"""
+    """cmd[0] 解析成绝对路径再交给 subprocess：Windows 的 CreateProcessW 不走 PATHEXT，
+    传 `npx` 会 WinError 2（实际是 `npx.cmd`）；shutil.which 懂 PATHEXT，全平台靠它兜底。"""
     if not cmd:
         return cmd
     resolved = shutil.which(cmd[0])
@@ -155,8 +151,8 @@ def _apply_agent_proxy_env(env: dict[str, str], engine_name: str) -> None:
 
 
 def _build_spawn_env(engine: EngineSpec) -> dict[str, str]:
-    """Claude wrapper 默认 spawn 自带的旧版 cli.js（模型列表跟终端不一致）；
-    检测到本地有 `claude` binary 时通过 CLAUDE_CODE_EXECUTABLE 让它走终端那一份。"""
+    """Claude wrapper 默认 spawn 自带的旧版 cli.js（模型列表跟终端不一致）；本地有 `claude`
+    binary 时用 CLAUDE_CODE_EXECUTABLE 指过去，走终端那一份。"""
     env = dict(os.environ)
     _apply_agent_proxy_env(env, engine.name)
     if engine.name == "claude" and "CLAUDE_CODE_EXECUTABLE" not in env:
@@ -255,14 +251,12 @@ class ACPBackend:
         auto_approve: bool = False,
     ) -> AsyncIterator[Any]:
         s = await self._ensure(sid, workdir, resume_id)
-        # 同 session 跨 prompt 复用同一条 queue (ACPClient.session_update 全往这推)；
-        # 上一轮 cancel 收尾时可能还有 session_update 落在 queue 里，进新一轮前清掉，
-        # 否则会被新 prompt 的 loop 当成自己的输出（症状：新提问返回上次的答案）。
+        # 同 session 跨 prompt 复用同一条 queue；上一轮 cancel 收尾可能残留 session_update，
+        # 进新一轮前清掉，否则被新 prompt 的 loop 误当自己的输出（症状：新提问返回上次答案）。
         while not s.queue.empty():
             s.queue.get_nowait()
 
-        # 一次性 yolo flag：本次 prompt 期间所有 permission 自动 allow_always。
-        # ACPClient.request_permission 看这个值；prompt 结束时清掉。
+        # 一次性 yolo flag：本轮 prompt 所有 permission 自动 allow_always，request_permission 看它，结束清掉。
         s.client.auto_approve_this_prompt = auto_approve
 
         async def _run() -> None:
@@ -272,8 +266,7 @@ class ACPBackend:
             except BaseException as e:  # noqa: BLE001
                 await s.queue.put(e)
 
-        # B 方案 elapsed 起点：_run 起跑（agent 收到 prompt RPC）。终点在 PromptResponse 落入循环时。
-        # mid-stream 期间 last_prompt_elapsed 保持上轮值 / None；render 端只在最终 flush 取值。
+        # elapsed 计时：_run 起跑为起点，PromptResponse 落入循环为终点；mid-stream 保持上轮值/None，render 只在最终 flush 取。
         t0 = time.monotonic()
         s.last_prompt_elapsed = None
         task = asyncio.create_task(_run())
@@ -284,8 +277,7 @@ class ACPBackend:
                     # 子进程退出：stderr_tail 含真实退出原因，附给用户排查
                     raise BackendError(f"ACP {self.engine.name} 退出{format_tail(s.stderr_tail)}")
                 if isinstance(item, BaseException):
-                    # prompt 阶段错误（如 codex 的 TLS reconnect 重试）：不附 stderr，
-                    # 那一坨 noise 进 gscore 日志已经够开发者排查，用户错误卡只看主因
+                    # prompt 阶段错误（如 codex TLS 重连）：不附 stderr，那坨 noise 进日志够排查了，错误卡只给主因
                     raise BackendError(str(item)) from item
                 # sniff before yield —— footer/render 各自消费
                 if isinstance(item, UsageUpdate):
@@ -298,9 +290,8 @@ class ACPBackend:
                 if isinstance(item, PromptResponse):
                     return
         finally:
-            # 必须 cancel + await：只 cancel 不 await 时 _run 还会继续 running 一小段
-            # （直到 await prompt 抛 CancelledError 再 push 异常到 queue），那段时间
-            # 我们已经 release prompt_lock，下一轮 prompt 进来会看到残留事件。
+            # 必须 cancel + await：只 cancel 不 await，_run 会继续跑一小段（直到 await prompt 抛
+            # CancelledError 再 push 异常到 queue），而此时 prompt_lock 已释放，下一轮会看到残留事件。
             if not task.done():
                 task.cancel()
             with contextlib.suppress(BaseException):
@@ -355,19 +346,15 @@ class ACPBackend:
                     limit=_LIMIT,
                     env=spawn_env,
                 )
-                # 立刻登记到 ~/.ccuid/spawned_pids.json：gscore 万一被强杀，下次
-                # 启动通过 reap_orphans() 把这个 PID 找出来 kill 掉，避免内存泄露。
+                # 登记到 spawned_pids.json：gscore 被强杀后，下次启动 reap_orphans() 按 PID 清掉孤儿，避免泄露。
                 record_spawn(proc.pid, self.engine.name)
                 stderr_task = asyncio.create_task(self._pump_stderr(proc, stderr_tail))
                 assert proc.stdin is not None and proc.stdout is not None
                 conn = connect_to_agent(client, proc.stdin, proc.stdout)
                 acp_sid: str
-                # NewSessionResponse / LoadSessionResponse 都带 typed
-                # `models: SessionModelState | None`，直接取，render 用来在
-                # header 渲染真实模型名。
+                # New/LoadSessionResponse 都带 typed `models: SessionModelState | None`，render 用来渲真实模型名。
                 models_state: SessionModelState | None
-                # 子进程 stdout 卡死时整个握手会永久挂；统一一个总超时把
-                # initialize + new/load_session 都罩住，超时由外层 except 兜底清进程。
+                # 子进程 stdout 卡死会让握手永久挂；一个总超时罩住 initialize + new/load_session，超时由外层 except 清进程。
                 async with asyncio.timeout(_HANDSHAKE_TIMEOUT_SEC):
                     init = await conn.initialize(
                         protocol_version=PROTOCOL_VERSION,

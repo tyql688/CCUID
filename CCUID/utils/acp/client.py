@@ -32,8 +32,7 @@ class ACPClient(Client):
     def __init__(self, queue: asyncio.Queue[Any], sid: str) -> None:
         self._queue = queue
         self._sid = sid
-        # `cc 下次允许` 的一次性 yolo flag。backend.prompt() 进入前 set；
-        # request_permission 看这个值决定走默认 policy 还是无脑 allow_always。
+        # `cc 下次允许` 一次性 yolo flag：backend.prompt() 前 set，request_permission 据此走默认 policy 或 allow_always。
         self.auto_approve_this_prompt: bool = False
 
     async def session_update(self, session_id: str, update: Any, **_: Any) -> None:
@@ -47,11 +46,8 @@ class ACPClient(Client):
         tool_call: ToolCallUpdate,
         **_: Any,
     ) -> RequestPermissionResponse:
-        """Branch on PermissionMode. `ask` 时挂 future 等用户审批；自动模式直
-        接选 agent 提供的对应 PermissionOption.kind。
-
-        `auto_approve_this_prompt`=True 时无视 config，本轮 prompt 期间所有
-        permission 都按 allow_always 走（`cc 下次允许` 的一次性 yolo）。"""
+        """按 PermissionMode 分流：`ask` 挂 future 等用户审批，自动模式直接选对应 kind 的 PermissionOption。
+        `auto_approve_this_prompt`=True 时无视 config，本轮全按 allow_always（`cc 下次允许` 一次性 yolo）。"""
         if self.auto_approve_this_prompt:
             policy: PermissionMode = "allow_always"
         else:
@@ -67,13 +63,10 @@ class ACPClient(Client):
         options: list[PermissionOption],
         tool_call: ToolCallUpdate,
     ) -> RequestPermissionResponse:
-        """Lazy import SessionRegistry — `session.py` imports the acp package
-        for ACPBackend, so importing it at module load would cycle.
+        """Lazy import REGISTRY 避免与 session.py 循环依赖（它 import 本包的 ACPBackend）。
 
-        `try/finally` 必须包 `cancel_pending`：原先只 catch TimeoutError 会让
-        CancelledError（session restart / LRU evict / shutdown 触发）直接传播，
-        future 永远留在 REGISTRY._pending 里造成泄漏。cancel_pending 内部 by
-        identity 找 future，幂等——take_pending 已 pop 的情况下也安全。
+        `try/finally` 必须包 `cancel_pending`：否则 CancelledError（restart/LRU evict/shutdown）传播时
+        future 会永远留在 _pending 泄漏。cancel_pending 按 identity 找、幂等，take_pending 已 pop 也安全。
         """
         from ..session import REGISTRY
 

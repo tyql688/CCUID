@@ -27,12 +27,10 @@ class PermissionOptionView:
 
 @dataclass(slots=True, frozen=True)
 class PermissionEvent:
-    """Surfaces an agent permission request to the user.
+    """向用户呈现一个 agent 权限请求。
 
-    `decision` records the *intent* (whichever PermissionMode was active);
-    `matched` records whether the agent actually offered a matching option.
-    Remaining fields mirror ACP `RequestPermissionRequest.tool_call` / options
-    so the approval card can show full context."""
+    `decision`=当时生效的 PermissionMode（意图）；`matched`=agent 是否真的给了匹配选项。
+    其余字段镜像 ACP `RequestPermissionRequest.tool_call` / options，供审批卡展示完整上下文。"""
 
     decision: PermissionMode
     tool_kind: ToolKind | None

@@ -27,8 +27,7 @@ _MAX_CONCURRENT_SESSIONS = 16
 
 
 async def _clear_workdir_contents(workdir: str) -> bool:
-    """清空目录内容但保留目录本身——active 子进程 cwd 仍是这条 inode，
-    rmtree 会让 cwd 指向已 unlink 的僵尸目录。返回是否找到目录。"""
+    """清空目录内容但保留目录本身：active 子进程 cwd 仍指这条 inode，rmtree 会让它变僵尸目录。返回目录是否存在。"""
     p = Path(workdir)
     if not p.exists():
         return False
@@ -67,11 +66,9 @@ class SessionMeta:
     workdir: str
     shared: bool = False
     last_active: float = field(default_factory=time.time)
-    # 同 session 多条 prompt 的串行排队 (lock + entries 在一个对象里)；
-    # 详见 prompt_queue.PromptQueue。
+    # 同 session 多条 prompt 串行排队，详见 prompt_queue.PromptQueue。
     queue: PromptQueue = field(default_factory=PromptQueue)
-    # `cc 下次允许` 设的一次性 flag：下条 prompt 期间所有权限自动 allow_always。
-    # 进入 run_prompt 时 consume（置 False）传给 backend。
+    # `cc 下次允许` 一次性 flag：下条 prompt 权限全自动 allow_always；run_prompt 里 consume（置 False）传给 backend。
     next_prompt_auto_approve: bool = False
 
     @property
@@ -174,8 +171,7 @@ class SessionRegistry:
                     result = (meta, self.backend(engine))
             if result:
                 if victim:
-                    # LRU eviction: close subprocess but keep native_id so the
-                    # evicted user can still resume on their next prompt.
+                    # LRU 淘汰：关子进程但留 native_id，被淘汰的用户下条 prompt 仍能 resume。
                     await self._finish_close(victim, drop_native=False)
                 return result
             await asyncio.sleep(_CLOSING_POLL_SEC)
@@ -244,8 +240,7 @@ class SessionRegistry:
         current = asyncio.current_task()
         notify: list[SessionMeta] = []
         count = 0
-        # 全程持锁完成 cancel：task.cancel() 是 sync (仅排出 CancelledError)，
-        # 不会触发 await；锁内做完 backend.cancel 才放出去。
+        # 全程持锁完成 cancel：task.cancel() 是 sync（仅排出 CancelledError），不触发 await，锁内做完才放出去。
         async with self._lock:
             for m in self._meta.values():
                 if m.gid != gid or m.engine != engine:
@@ -288,8 +283,7 @@ class SessionRegistry:
                 return DequeueIsRunning(entry=entry)
             if entry.uid != uid:
                 return DequeueForbidden(entry=entry, caller_uid=uid)
-            # 锁内 cancel + remove：杜绝 "刚 cancel 就抢到 lock 开跑" 的窗口；
-            # run_prompt 的 finally 再 remove 一次也无害（pop 幂等）。
+            # 锁内 cancel + remove：杜绝"刚 cancel 就抢到 lock 开跑"的窗口；run_prompt 的 finally 再 remove 也无害（pop 幂等）。
             entry.task.cancel()
             meta.queue.remove(qid)
             return DequeueOk(entry=entry)
@@ -384,8 +378,7 @@ class SessionRegistry:
     async def start_cleanup(self) -> None:
         if self._cleanup_task and not self._cleanup_task.done():
             return
-        # 把启动 sweep 同步等完再起 _loop：fire-and-forget create_task 没存引用，
-        # GC 可能提前回收（3.11+ 直接 RuntimeWarning）；先 sweep 也能让首 tick 不竞速。
+        # 先同步跑完启动 sweep 再起 _loop：create_task 不存引用会被 GC 回收（3.11+ RuntimeWarning），先 sweep 也避免首 tick 竞速。
         await self._reap_expired()
         self._cleanup_task = asyncio.get_running_loop().create_task(self._loop(), name="CCUID-cleanup")
 
@@ -396,8 +389,7 @@ class SessionRegistry:
             targets = list(self._meta.values())
             self._meta.clear()
             self._closing.update(m.sid for m in targets)
-        # Don't drop native_id on shutdown — let the next start-up sweep decide
-        # based on idle time, so a quick restart doesn't lose active sessions.
+        # shutdown 不丢 native_id：交给下次启动 sweep 按 idle 时间决定，快速重启不丢活跃 session。
         for meta in targets:
             await self._finish_close(meta, drop_native=False)
         for backend in self._backends.values():

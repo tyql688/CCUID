@@ -41,8 +41,9 @@ from ..cc_config.cc_config import CCUIDConfig
 _AUTO_IMAGE_THRESHOLD = 600
 _IMAGE_MAX_WIDTH = 720
 
-# 故意不消费的事件——_classify 落到这里的静默 drop；其它陌生类型 log 一次。
-# ToolCallProgress / UsageUpdate / AgentThoughtChunk 都有显式分支，不进此表。
+# 故意不消费的事件：落这里静默 drop，不计入"陌生类型"告警。
+# UsageUpdate / AgentThoughtChunk 有显式 return None 分支，不进此表；
+# ToolCallProgress 有条件分支但会落穿，故仍需登记。
 _KNOWN_UNUSED_EVENTS: tuple[type, ...] = (
     SessionInfoUpdate,
     AvailableCommandsUpdate,
@@ -52,8 +53,7 @@ _KNOWN_UNUSED_EVENTS: tuple[type, ...] = (
 _warned_event_types: set[str] = set()
 
 
-# 流式 chunk → fragment，由 render() 累积成单个 ChatBlock，避免 token-level 切片
-# （cursor 86 / opencode 61 块/轮）被渲成几十条独立行
+# 流式 chunk → fragment，render() 累积成单个 ChatBlock，否则 token-level 切片渲成几十条独立行
 StreamKind = Literal["agent", "think"]
 StreamFragment = tuple[StreamKind, str]
 
@@ -62,14 +62,11 @@ StreamFragment = tuple[StreamKind, str]
 class RenderContext:
     bot_id: str
     engine: str
-    # Lazy callable so subprocess可在 render 第一次 flush 之前才真正 spawn —
-    # 直接传 str 会拿到 ensure 前的 None。返回 None = header 隐藏模型槽。
+    # lazy：subprocess 首次 flush 前才 spawn，传 str 会拿到 ensure 前的 None。返回 None = 隐藏模型槽。
     model_resolver: Callable[[], str | None] = field(default=lambda: None)
-    # session workdir 绝对路径，用于附件路径沙箱（路径必须在 workdir 内才发）。
-    # None 时附件检测整体关闭——避免裸路径绕过 sandbox。
+    # 附件沙箱根：路径须在此目录内才发。None = 关闭附件检测，避免裸路径绕过 sandbox。
     workdir: str | None = None
-    # per-prompt agent 推理耗时 lazy callable；PromptResponse 之前返回 None，
-    # mid-stream flush 时拿到的也是 None —— header 自动不显示。
+    # per-prompt 推理耗时 lazy callable；PromptResponse 前 / mid-stream 返回 None → header 不显示。
     elapsed_resolver: Callable[[], float | None] = field(default=lambda: None)
 
 
@@ -125,7 +122,7 @@ def _classify(
         text = _chunk_text(ev.content)
         return ("agent", text) if text else None
     if isinstance(ev, AgentThoughtChunk) and show_thinking:
-        # token-level 切片，必须走 fragment 累积，见 rules.md 「思考流渲染」
+        # token-level 切片 → fragment 累积（见上方 StreamFragment 说明）
         text = _chunk_text(ev.content)
         return ("think", text) if text else None
     if isinstance(ev, ToolCallStart) and show_tools:
@@ -156,10 +153,10 @@ def _classify(
         return ChatBlock("mode", ev.current_mode_id)
     if isinstance(ev, PermissionEvent):
         return _permission_block(ev)
-    # UsageUpdate 在 render() 末尾走 footer 路径，这里显式 None 不计入未知类型。
+    # UsageUpdate 走 footer 路径，这里显式 None 不计入未知类型。
     if isinstance(ev, UsageUpdate):
         return None
-    # AgentThoughtChunk 当用户关 ShowThinking 时也走这里 → 静默 drop。
+    # 关了 ShowThinking 的 AgentThoughtChunk 落这里 → 静默 drop。
     if isinstance(ev, AgentThoughtChunk):
         return None
     # 未消费的事件类型：known-unused 静默；其它陌生类型每种 log 一次。
@@ -261,10 +258,8 @@ def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
 
 
 def _block_render_size(block: ChatBlock) -> int:
-    """估算单个 block 渲染后大致字符数 —— `_should_image` 用它跟阈值比较。
-    `agent_md` / `plan` 直接看 body；`permission` body 是空串但渲染后的卡
-    片字符量主要来自 meta（locations / content_summary），所以
-    单独算。其它 block 类型字符量小，按 body 长度即可。"""
+    """估算 block 渲染后字符数，`_should_image` 跟阈值比较。
+    permission 的 body 是空串、字符量在 meta（locations/content_summary）里，单独算；其它按 body 长度。"""
     if block.kind != "permission":
         return len(block.body)
     size = 0
@@ -365,9 +360,8 @@ async def _send_blocks(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext) ->
     await _send_referenced_attachments(bot, renderable, ctx)
 
 
-# agent 文本 / tool output 里 mention 的本地路径就抓出来发给用户。
-# 路径起点支持：~ / Unix 绝对 / Windows 盘符。扩展名 1-8 字符避免裸 `.` 误中。
-# `\b` 挡 https://、ws:// 等 schema 的伪命中——`http**s**:` 在词中不算 boundary。
+# 抓 agent 文本 / tool output 里的本地路径发给用户。起点：~ / Unix 绝对 / Windows 盘符；
+# 扩展名 1-8 字符免裸 `.` 误中；`\b` 挡 https:// 伪命中（`https:` 的 s 在词中不算 boundary）。
 _FILE_PATH_RE = re.compile(
     r"(?:\b[A-Za-z]:[\\/]|~|/)[\w./\\-]+\.\w{1,8}",
 )
@@ -377,9 +371,7 @@ _MAX_FILE_BYTES = 100 * 1024 * 1024  # OneBot file segment 保守上限
 
 
 def _collect_attachment_paths(blocks: list[ChatBlock], sandbox: Path | None) -> list[Path]:
-    """从 block body 里 grep 路径并按大小阈值收。`sandbox=None` 时不做范围限制
-    （任何 is_file 的路径都收）；传 Path 时只收 sandbox 内的，挡掉 /etc/passwd /
-    ~/.ssh 之类敏感路径。"""
+    """从 block body grep 路径、按大小阈值收。sandbox=None 不限范围；传 Path 只收其内的，挡 /etc/passwd、~/.ssh 等。"""
     seen: set[Path] = set()
     out: list[Path] = []
     for block in blocks:
@@ -447,20 +439,16 @@ async def render(
     *,
     usage_provider: Callable[[], PromptUsage | None] | None = None,
 ) -> None:
-    """Stream events into blocks; flush mid-stream when an `ask`-mode permission
-    request appears so the user can actually answer it before the agent's RPC
-    times out (otherwise the whole conversation deadlocks: agent waits for
-    permission, render waits for PromptResponse, user sees nothing).
+    """Stream events → blocks。`ask` 权限请求要 mid-stream flush，否则死锁：
+    agent 等 permission、render 等 PromptResponse、用户什么都看不到。
 
-    Strategy:
-      - accumulate `agent_md` / `tool` / `plan` / etc into a single batch
-      - stream fragments ("agent" / "think") 各自累积到 agent_buf / thought_buf；
-        遇到非匹配 kind（含 ChatBlock / 流末）时 flush 对应 buf 成完整 ChatBlock
-      - on `PermissionEvent`: flush all buffers, emit the approval card, continue
-      - on stream end: flush whatever is left + 追加 usage footer（如有数据）
+    策略：
+      - agent_md / tool / plan 等累积成一批
+      - stream fragments (agent/think) 各自累积到 buf，遇非匹配 kind / 流末 flush 成 ChatBlock
+      - PermissionEvent: flush 全部 + 发审批卡 + 继续
+      - 流末: flush 残余 + 追加 usage footer
 
-    `usage_provider` 拿到 PromptUsage 后渲染 footer；返回 None 表示该 engine 不报
-    数据（claude/cursor）→ 不显示 footer。spec 上 Usage 是 session 累积值。"""
+    usage_provider 返回 None = 该 engine 不报数据（如 claude/cursor）→ 不显示 footer。"""
     show_thinking = bool(CCUIDConfig.get_config("ShowThinking").data)
     tool_display: ToolDisplayMode = CCUIDConfig.get_config("ToolDisplay").data
     show_auto_perms = bool(CCUIDConfig.get_config("ShowAutoPermissions").data)
@@ -508,12 +496,10 @@ async def render(
                     flush_agent()
                     thought_buf.append(text)
                 continue
-            # ChatBlock —— PermissionEvent 是唯一要 mid-stream flush 的；其它
-            # 累到下次 flush_pending。理由见函数 docstring 顶部。
+            # 只有 PermissionEvent 要 mid-stream flush；其它累到下次 flush_pending（理由见 docstring）。
             if out.kind == "permission":
-                # 自动决策（allow_* / reject_once）只是信息——用户没动作要做、
-                # agent 也不会卡。除非 ShowAutoPermissions 显式开，否则吞掉，
-                # 别让卡片刷屏。ASK 永远显示，因为用户必须回复才能解锁 agent。
+                # 自动决策只是信息（用户无需动作、agent 不卡）；ShowAutoPermissions 没开就吞掉免刷屏。
+                # ASK 永远显示——用户必须回复才能解锁 agent。
                 if out.meta["decision"] != "ask" and not show_auto_perms:
                     continue
                 await flush_pending()

@@ -32,7 +32,7 @@ _VENDOR = _ASSETS / "vendor"
 _KATEX_JS = _VENDOR / "katex" / "katex.min.js"
 _KATEX_CSS = _VENDOR / "katex" / "katex.min.css"
 _MERMAID_JS = _VENDOR / "mermaid" / "mermaid.min.js"
-# 复用 cc_help/icon_path/ 下的 engine logo（已 1254x1254 RGBA 对齐过）
+# 复用 cc_help/icon_path/ 下的 engine logo（512x512 RGBA、字形约 55% 居中对齐）
 _ENGINE_ICON_DIR = _HERE.parent / "cc_help" / "icon_path"
 
 
@@ -301,7 +301,7 @@ def build_markdown(blocks: list[ChatBlock], ctx: ImageContext) -> str:
     elapsed_span = (
         f'<span class="cc-elapsed">{_format_duration(ctx.elapsed_sec)}</span>' if ctx.elapsed_sec is not None else ""
     )
-    logo_img = f'<img class="cc-engine-logo" src="{ctx.icon_url}" alt="">' if ctx.icon_url else ""
+    logo_img = f'<span class="cc-engine-logo"><img src="{ctx.icon_url}" alt=""></span>' if ctx.icon_url else ""
     top = (
         f"{logo_img}"
         f'<span class="cc-engine">{_text(ctx.engine_display)}</span>'

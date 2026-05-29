@@ -1,0 +1,7 @@
+# 第三方压缩资源，禁止格式化
+CCUID/utils/render_assets/vendor/
+# Jinja 模板，Prettier 无法推断 parser
+*.j2
+# 环境 / 构建产物
+.venv/
+.pdm-build/

@@ -23,4 +23,13 @@ repos:
       - id: check-toml
       - id: check-added-large-files
         args: [--maxkb=512]
-        exclude: ^CCUID/utils/render_assets/vendor/mermaid/mermaid\.min\.js$
+        exclude: ^CCUID/utils/render_assets/vendor/
+
+  # 前端资源 (css / js / html / markdown) 格式化，与 IDE 同版本同配置 (.prettierrc)
+  # 注：.j2 模板含 Jinja 占位符，Prettier 推断不出 parser，已在 .prettierignore 排除。
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.7.4
+    hooks:
+      - id: prettier
+        types_or: [css, javascript, markdown, html]
+        exclude: ^CCUID/utils/render_assets/vendor/

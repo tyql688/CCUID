@@ -1,5 +1,7 @@
-from typing import Protocol
+from typing import cast
 from pathlib import Path
+
+from acp.schema import SessionInfo
 
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
@@ -16,22 +18,8 @@ _SESSION_SCOPE_WORKDIR = "workdir"
 _SESSION_SCOPE_ALL = "all"
 
 
-class _RemoteSessionView(Protocol):
-    @property
-    def cwd(self) -> str: ...
-
-    @property
-    def session_id(self) -> str: ...
-
-    @property
-    def title(self) -> str | None: ...
-
-    @property
-    def updated_at(self) -> str | None: ...
-
-
 def _session_load_scope() -> str:
-    raw = str(CCUIDConfig.get_config("SessionLoadScope").data).strip().lower()
+    raw = str(cast(object, CCUIDConfig.get_config("SessionLoadScope").data)).strip().lower()
     if raw in {_SESSION_SCOPE_ALL, "全部"}:
         return _SESSION_SCOPE_ALL
     return _SESSION_SCOPE_WORKDIR
@@ -57,9 +45,9 @@ def _session_title(title: str | None) -> str:
 
 
 def _filter_current_workdir_sessions(
-    sessions: tuple[_RemoteSessionView, ...],
+    sessions: tuple[SessionInfo, ...],
     workdir: str,
-) -> tuple[_RemoteSessionView, ...]:
+) -> tuple[SessionInfo, ...]:
     with_cwd = [session for session in sessions if session.cwd]
     if not with_cwd:
         return sessions
@@ -67,16 +55,16 @@ def _filter_current_workdir_sessions(
 
 
 def _filter_sessions_by_scope(
-    sessions: tuple[_RemoteSessionView, ...],
+    sessions: tuple[SessionInfo, ...],
     workdir: str,
     scope: str,
-) -> tuple[_RemoteSessionView, ...]:
+) -> tuple[SessionInfo, ...]:
     if scope == _SESSION_SCOPE_ALL:
         return sessions
     return _filter_current_workdir_sessions(sessions, workdir)
 
 
-def _resolve_session_ref(token: str, sessions: tuple[_RemoteSessionView, ...]) -> _RemoteSessionView | None:
+def _resolve_session_ref(token: str, sessions: tuple[SessionInfo, ...]) -> SessionInfo | None:
     raw = token.strip()
     if not raw:
         return None
@@ -98,11 +86,11 @@ async def _list_scoped_sessions(
     *,
     scope: str,
     cursor: str | None = None,
-) -> tuple[bool, tuple[_RemoteSessionView, ...], str | None]:
+) -> tuple[bool, tuple[SessionInfo, ...], str | None]:
+    # claude-code-acp 的服务端 cwd 过滤会漏掉实际存在的 session；统一本地过滤，保持各 adapter 行为一致。
     supported, sessions, next_cursor = await REGISTRY.backend(engine).list_agent_sessions(
         workdir,
         cursor=cursor,
-        cwd=workdir if scope != _SESSION_SCOPE_ALL else None,
     )
     if not supported:
         return False, (), None

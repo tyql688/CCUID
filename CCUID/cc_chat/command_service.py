@@ -1,4 +1,4 @@
-from typing import Protocol
+from acp.schema import AvailableCommand
 
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
@@ -13,27 +13,6 @@ _SLASH_COMMAND_NAME_MAX = 80
 _SLASH_COMMAND_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_. -")
 
 
-class _CommandInputRoot(Protocol):
-    @property
-    def hint(self) -> str: ...
-
-
-class _CommandInput(Protocol):
-    @property
-    def root(self) -> _CommandInputRoot: ...
-
-
-class _CommandView(Protocol):
-    @property
-    def name(self) -> str: ...
-
-    @property
-    def description(self) -> str: ...
-
-    @property
-    def input(self) -> _CommandInput | None: ...
-
-
 def _valid_slash_command_name(name: str) -> bool:
     return (
         0 < len(name) <= _SLASH_COMMAND_NAME_MAX
@@ -42,7 +21,7 @@ def _valid_slash_command_name(name: str) -> bool:
     )
 
 
-def _resolve_slash_command(raw: str, commands: tuple[_CommandView, ...]) -> tuple[str, str] | None:
+def _resolve_slash_command(raw: str, commands: tuple[AvailableCommand, ...]) -> tuple[str, str] | None:
     text = raw.strip()
     if not text or "\n" in text or "\r" in text:
         return None

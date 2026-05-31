@@ -6,7 +6,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
 
-from .acp.content import PromptBlock, text_block, image_block
+from .acp.prompt import PromptBlock, text_block, image_block
 
 _SIGS = (
     (b"\xff\xd8\xff", "image/jpeg"),

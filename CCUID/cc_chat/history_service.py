@@ -7,12 +7,12 @@ from .common import send_engine_list
 from ..utils.msgs import RemoteSessionMsg
 from ..utils.paths import same_path
 from ..utils.errors import user_error
-from ..utils.session import REGISTRY
+from ..utils.runtime import REGISTRY
 from ..utils.timefmt import format_local_datetime
+from ..utils.acp.types import SessionInfo
 from ..utils.acp.backend import BackendError
 from ..utils.list_render import RecordItem, RecordField, markdown_records
 from ..cc_config.cc_config import CCUIDConfig
-from ..utils.acp.schema_types import SessionInfo
 
 _SESSION_SCOPE_WORKDIR = "workdir"
 _SESSION_SCOPE_ALL = "all"

@@ -6,9 +6,9 @@ from gsuid_core.models import Event
 from .common import send_engine_list
 from ..utils.msgs import CommandMsg
 from .chat_service import do_chat
-from ..utils.session import REGISTRY
+from ..utils.runtime import REGISTRY
+from ..utils.acp.types import AvailableCommand
 from ..utils.list_render import RecordItem, RecordField, markdown_records
-from ..utils.acp.schema_types import AvailableCommand
 
 _SLASH_COMMAND_NAME_MAX = 80
 _SLASH_COMMAND_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_. -")

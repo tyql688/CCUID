@@ -5,10 +5,11 @@ from gsuid_core.models import Event
 
 from ..utils.msgs import ChatMsg, QueueMsg
 from ..utils.errors import user_error
-from ..utils.output import RenderContext, render
-from ..utils.session import REGISTRY, PendingApproval
+from ..utils.output import render
+from ..utils.runtime import REGISTRY, PendingApproval
 from ..utils.acp.backend import BackendError
 from ..utils.attachments import build_prompt
+from ..utils.presentation.delivery import RenderContext
 
 
 def _make_preview(text: str) -> str:

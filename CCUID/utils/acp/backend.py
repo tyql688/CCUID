@@ -40,7 +40,7 @@ from gsuid_core.logger import logger
 from .state import _extract_modes, _extract_models, _extract_mode_config, _extract_model_config
 from ..paths import same_path
 from .client import ACPClient, PermissionApprovalStore
-from .content import PromptBlock
+from .prompt import PromptBlock
 from .orphans import record_teardown
 from .process import (
     STDERR_TAIL_LINES,

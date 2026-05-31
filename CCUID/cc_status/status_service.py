@@ -7,7 +7,7 @@ from gsuid_core.models import Event
 
 from ..utils.msgs import StatusMsg
 from ..utils.engines import list_engines
-from ..utils.session import REGISTRY
+from ..utils.runtime import REGISTRY
 from ..utils.timefmt import format_local_datetime
 from ..utils.database import CCUIDSessionNative
 from ..utils.list_render import RecordItem, RecordField, markdown_table, markdown_records, send_markdown_image_or_text

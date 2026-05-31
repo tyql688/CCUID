@@ -22,7 +22,7 @@ from pygments.formatters.html import HtmlFormatter
 
 from gsuid_core.logger import logger
 
-from .acp.content import permission_display, clean_permission_summary
+from .presentation.permission import permission_display, clean_permission_summary
 
 if TYPE_CHECKING:
     from playwright.async_api import Page

@@ -6,7 +6,7 @@ from gsuid_core.models import Event
 from .common import send_engine_list
 from ..utils.msgs import ChatMsg, QueueMsg
 from ..utils.errors import user_error
-from ..utils.session import (
+from ..utils.runtime import (
     REGISTRY,
     DequeueOk,
     DequeueNotFound,

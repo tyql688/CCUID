@@ -20,8 +20,7 @@ from acp.schema import (
     WaitForTerminalExitResponse,
 )
 
-from .policy import PermissionMode, decide_auto
-from .content import build_event
+from .permission import PermissionMode, build_event, decide_auto
 from .tool_state import ToolCallState
 from ...cc_config.cc_config import CCUIDConfig
 

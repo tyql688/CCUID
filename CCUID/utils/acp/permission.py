@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from acp.schema import (
     DeniedOutcome,
     AllowedOutcome,
+    ToolCallUpdate,
     PermissionOption,
+    RequestPermissionRequest,
     RequestPermissionResponse,
 )
 
@@ -20,6 +22,17 @@ class AutoDecision:
     response: RequestPermissionResponse
     decision: PermissionMode
     matched: bool
+
+
+class PermissionEvent(RequestPermissionRequest):
+    """向用户呈现一个 agent 权限请求。
+
+    `decision`=当时生效的 PermissionMode（意图）；`matched`=agent 是否真的给了匹配选项。
+    其余字段直接继承 ACP `RequestPermissionRequest`。
+    """
+
+    decision: PermissionMode
+    matched: bool = True
 
 
 def decide_auto(options: list[PermissionOption], policy: PermissionMode) -> AutoDecision:
@@ -38,4 +51,21 @@ def decide_auto(options: list[PermissionOption], policy: PermissionMode) -> Auto
         RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled")),
         policy,
         matched=False,
+    )
+
+
+def build_event(
+    decision: PermissionMode,
+    session_id: str,
+    tool_call: ToolCallUpdate,
+    options: list[PermissionOption],
+    matched: bool,
+) -> PermissionEvent:
+    """Pack a typed ACP request into PermissionEvent."""
+    return PermissionEvent(
+        decision=decision,
+        session_id=session_id,
+        tool_call=tool_call,
+        matched=matched,
+        options=options,
     )

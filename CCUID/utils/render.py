@@ -195,6 +195,14 @@ def _render_untrusted_markdown(md: str) -> str:
     return _UNTRUSTED_MD_ENGINE.render(_normalize_blocks(md.rstrip()))
 
 
+def _render_labeled_markdown(label: str, label_kind: str, body: str) -> str:
+    rendered = _render_untrusted_markdown(body)
+    stripped = rendered.strip()
+    if stripped.startswith("<p>") and stripped.endswith("</p>") and stripped.count("<p>") == 1:
+        return f"{_tag(label, label_kind)}{stripped[3:-4]}"
+    return f'{_tag(label, label_kind)}<div class="cc-tool-body">{rendered}</div>'
+
+
 def _render_block(block: ChatBlock) -> str:
     if block.kind == "agent_md":
         return _render_untrusted_markdown(block.body)
@@ -204,9 +212,10 @@ def _render_block(block: ChatBlock) -> str:
         return f'<div class="cc-think">{_tag("think")}{_text(block.body)}</div>'
     if block.kind == "tool":
         kind = block.meta["kind"]
-        return f'<div class="cc-tool cc-tool-{kind}">{_tag(kind, kind)}{_text(block.body)}</div>'
+        return f'<div class="cc-tool cc-tool-{kind}">{_render_labeled_markdown(kind, kind, block.body)}</div>'
     if block.kind == "tool_failed":
-        return f'<div class="cc-tool cc-tool-failed">{_tag("failed", "failed")}{_text(block.body)}</div>'
+        body = _render_labeled_markdown("failed", "failed", block.body)
+        return f'<div class="cc-tool cc-tool-failed">{body}</div>'
     if block.kind == "plan":
         return _render_untrusted_markdown(block.body)
     if block.kind == "mode":

@@ -520,6 +520,15 @@ div.arithmatex {
   font-size: 0.95em;
   color: #4a5560;
 }
+.cc-tool-body {
+  margin-top: 6px;
+}
+.cc-tool-body > :first-child {
+  margin-top: 0;
+}
+.cc-tool-body > :last-child {
+  margin-bottom: 0;
+}
 
 .cc-aux {
   color: #6e7781;

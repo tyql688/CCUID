@@ -80,7 +80,7 @@ def reap_orphans() -> int:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
         killed += 1
-        logger.info(f"[CCUID] reap 孤儿 ACP 子进程 pid={pid} hint={hint!r}")
+        logger.debug(f"[CCUID] reap 孤儿 ACP 子进程 pid={pid} hint={hint!r}")
     _save({})
     return killed
 

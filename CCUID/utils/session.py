@@ -480,7 +480,7 @@ class SessionRegistry:
             if updated_at is not None and updated_at > 0 and now - updated_at > soft_sec:
                 await CCUIDSessionNative.drop(entry.name)
                 idle = int(now - updated_at)
-                logger.info(f"[CCUID] session 软过期(上下文已丢弃): {entry.name} idle={idle}s")
+                logger.debug(f"[CCUID] session 软过期(上下文已丢弃): {entry.name} idle={idle}s")
 
 
 REGISTRY = SessionRegistry()

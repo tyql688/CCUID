@@ -67,6 +67,47 @@ StreamFragment = tuple[StreamKind, str]
 
 
 @dataclass(slots=True)
+class _RenderBuffer:
+    pending: list[ChatBlock] = field(default_factory=list)
+    agent_chunks: list[str] = field(default_factory=list)
+    thought_chunks: list[str] = field(default_factory=list)
+
+    def _flush_agent(self) -> None:
+        text = "".join(self.agent_chunks).strip()
+        if text:
+            self.pending.append(ChatBlock("agent_md", text))
+        self.agent_chunks.clear()
+
+    def _flush_thought(self) -> None:
+        text = "".join(self.thought_chunks).strip()
+        if text:
+            self.pending.append(ChatBlock("think", text))
+        self.thought_chunks.clear()
+
+    def flush_streams(self) -> None:
+        self._flush_thought()
+        self._flush_agent()
+
+    def append_fragment(self, kind: StreamKind, text: str) -> None:
+        if kind == "agent":
+            self._flush_thought()
+            self.agent_chunks.append(text)
+            return
+        self._flush_agent()
+        self.thought_chunks.append(text)
+
+    def append_block(self, block: ChatBlock) -> None:
+        self.flush_streams()
+        _append_or_replace_tool(self.pending, block)
+
+    def pop_pending(self) -> list[ChatBlock]:
+        self.flush_streams()
+        blocks = self.pending
+        self.pending = []
+        return blocks
+
+
+@dataclass(slots=True)
 class RenderContext:
     bot_id: str
     engine: str
@@ -429,15 +470,15 @@ def _decode_agent_image(raw: object) -> bytes | None:
     if not isinstance(raw, str):
         return None
     if len(raw) > _MAX_AGENT_IMAGE_BASE64_CHARS:
-        logger.warning("[CCUID] agent image skipped: base64 too large")
+        logger.debug("[CCUID] agent image skipped: base64 too large")
         return None
     try:
         data = base64.b64decode(raw, validate=True)
     except (binascii.Error, ValueError):
-        logger.warning("[CCUID] agent image skipped: invalid base64")
+        logger.debug("[CCUID] agent image skipped: invalid base64")
         return None
     if len(data) > _MAX_AGENT_IMAGE_BYTES:
-        logger.warning("[CCUID] agent image skipped: image too large")
+        logger.debug("[CCUID] agent image skipped: image too large")
         return None
     return data
 
@@ -448,7 +489,7 @@ async def _send_agent_images(bot: Bot, blocks: list[ChatBlock]) -> None:
         if block.kind != "agent_image":
             continue
         if not _agent_image_mime_supported(block.meta.get("mime_type")):
-            logger.warning("[CCUID] agent image skipped: unsupported mime type")
+            logger.debug("[CCUID] agent image skipped: unsupported mime type")
             continue
         data = _decode_agent_image(block.meta.get("data"))
         if data is None:
@@ -490,32 +531,12 @@ async def render(
     show_thinking = bool(CCUIDConfig.get_config("ShowThinking").data)
     tool_display: ToolDisplayMode = CCUIDConfig.get_config("ToolDisplay").data
     show_auto_perms = bool(CCUIDConfig.get_config("ShowAutoPermissions").data)
-    pending: list[ChatBlock] = []
-    agent_buf: list[str] = []
-    thought_buf: list[str] = []
-
-    def flush_agent() -> None:
-        text = "".join(agent_buf).strip()
-        if text:
-            pending.append(ChatBlock("agent_md", text))
-        agent_buf.clear()
-
-    def flush_thought() -> None:
-        text = "".join(thought_buf).strip()
-        if text:
-            pending.append(ChatBlock("think", text))
-        thought_buf.clear()
-
-    def flush_streams() -> None:
-        """Both buffers; order: thought 先（先思考再答），agent 后。"""
-        flush_thought()
-        flush_agent()
+    buffer = _RenderBuffer()
 
     async def flush_pending() -> None:
-        flush_streams()
-        if pending:
-            await _send_blocks(bot, pending, ctx)
-            pending.clear()
+        blocks = buffer.pop_pending()
+        if blocks:
+            await _send_blocks(bot, blocks, ctx)
 
     try:
         async for ev in events:
@@ -527,12 +548,7 @@ async def render(
             if isinstance(out, tuple):
                 # StreamFragment: 累积到对应 buf；切 kind 时 flush 另一边
                 kind, text = out
-                if kind == "agent":
-                    flush_thought()
-                    agent_buf.append(text)
-                else:
-                    flush_agent()
-                    thought_buf.append(text)
+                buffer.append_fragment(kind, text)
                 continue
             # 只有 PermissionEvent 要 mid-stream flush；其它累到下次 flush_pending（理由见 docstring）。
             if out.kind == "permission":
@@ -546,22 +562,20 @@ async def render(
                 else:
                     await _send_blocks(bot, [out], ctx)
             else:
-                flush_streams()
-                _append_or_replace_tool(pending, out)
+                buffer.append_block(out)
     except BackendError as e:
-        flush_streams()
-        pending.append(ChatBlock("error", user_error(e)))
+        buffer.append_block(ChatBlock("error", user_error(e)))
     except Exception:
         logger.exception(f"[CCUID/{ctx.engine}] event stream crashed")
 
     # footer 跟主输出一起 flush：图模式渲进图底部、text 模式追在末尾
-    flush_streams()
+    buffer.flush_streams()
     if usage_provider is not None:
         usage = usage_provider()
         if usage is not None:
             line = _format_usage_footer(usage)
             if line:
-                pending.append(ChatBlock("usage_footer", line))
-    if pending:
-        await _send_blocks(bot, pending, ctx)
-        pending.clear()
+                buffer.append_block(ChatBlock("usage_footer", line))
+    blocks = buffer.pop_pending()
+    if blocks:
+        await _send_blocks(bot, blocks, ctx)

@@ -212,6 +212,8 @@ def _render_block(block: ChatBlock) -> str:
         return f'<div class="cc-think">{_tag("think")}{_text(block.body)}</div>'
     if block.kind == "tool":
         kind = block.meta["kind"]
+        if kind == "other":
+            return _render_untrusted_markdown(block.body)
         return f'<div class="cc-tool cc-tool-{kind}">{_render_labeled_markdown(kind, kind, block.body)}</div>'
     if block.kind == "tool_failed":
         body = _render_labeled_markdown("failed", "failed", block.body)

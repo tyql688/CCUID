@@ -4,13 +4,14 @@ import binascii
 from typing import Any, Literal
 from pathlib import Path
 from dataclasses import field, dataclass
-from collections.abc import Callable, AsyncIterator
+from collections.abc import Callable, Sequence, AsyncIterator
 
 from acp.schema import (
     UsageUpdate,
     ToolCallStart,
     PromptResponse,
     AgentPlanUpdate,
+    PermissionOption,
     TextContentBlock,
     ToolCallProgress,
     UserMessageChunk,
@@ -38,7 +39,7 @@ from .render import (
     clean_permission_summary,
 )
 from .engines import get_engine
-from .acp.events import PermissionEvent, PermissionOptionView
+from .acp.events import PermissionEvent
 from .acp.backend import PromptUsage, BackendError
 from ..cc_config.cc_config import CCUIDConfig
 
@@ -85,16 +86,18 @@ def _fmt_plan(ev: AgentPlanUpdate) -> str:
 
 
 def _permission_block(ev: PermissionEvent) -> ChatBlock:
+    from .acp.content import summarize_content
+
     return ChatBlock(
         "permission",
         body="",
         meta={
             "decision": ev.decision,
-            "kind": ev.tool_kind,
-            "title": ev.tool_title,
+            "kind": ev.tool_call.kind,
+            "title": ev.tool_call.title,
             "matched": ev.matched,
-            "locations": ev.locations,
-            "content_summary": ev.content_summary,
+            "locations": tuple(ev.tool_call.locations) if ev.tool_call.locations is not None else (),
+            "content_summary": summarize_content(ev.tool_call.content),
             "options": ev.options,
         },
     )
@@ -186,7 +189,7 @@ def _append_or_replace_tool(buf: list[ChatBlock], block: ChatBlock) -> None:
     buf.append(block)
 
 
-def _permission_buttons(options: tuple[PermissionOptionView, ...]) -> list[list[Button]]:
+def _permission_buttons(options: Sequence[PermissionOption]) -> list[list[Button]]:
     from ..cc_config.prefix import cc_prefix
 
     pfx = cc_prefix()
@@ -467,15 +470,16 @@ async def _send_agent_images(bot: Bot, blocks: list[ChatBlock]) -> None:
 
 
 def _format_usage_footer(usage: PromptUsage) -> str:
+    value = usage.usage
+    if value is None:
+        return ""
     parts: list[str] = []
-    if usage.input_tokens is not None:
-        parts.append(f"input {usage.input_tokens}")
-    if usage.output_tokens is not None:
-        parts.append(f"output {usage.output_tokens}")
-    if usage.cached_read_tokens is not None:
-        parts.append(f"cached_read {usage.cached_read_tokens}")
-    if usage.cached_write_tokens is not None:
-        parts.append(f"cached_write {usage.cached_write_tokens}")
+    parts.append(f"input {value.input_tokens}")
+    parts.append(f"output {value.output_tokens}")
+    if value.cached_read_tokens is not None:
+        parts.append(f"cached_read {value.cached_read_tokens}")
+    if value.cached_write_tokens is not None:
+        parts.append(f"cached_write {value.cached_write_tokens}")
     return " · ".join(parts)
 
 

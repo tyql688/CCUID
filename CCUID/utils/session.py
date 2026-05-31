@@ -8,8 +8,6 @@ from pathlib import Path
 from dataclasses import field, dataclass
 from collections.abc import AsyncIterator
 
-from acp.schema import PermissionOption
-
 from gsuid_core.logger import logger
 
 from .mode import GroupMode
@@ -17,6 +15,7 @@ from .engines import get_engine
 from .database import CCUIDGrantGroup, CCUIDSessionModel, CCUIDSessionNative
 from .acp.backend import ACPBackend, BackendError
 from .prompt_queue import QueueEntry, PromptQueue
+from .acp.schema_types import RequestPermissionRequest
 from ..cc_config.cc_config import CCUIDConfig
 from .resource.RESOURCE_PATH import WORKDIR_ROOT
 
@@ -88,9 +87,7 @@ class PendingApproval:
     """`future.set_result(option_id)` 放行；`set_result(None)` 拒绝。"""
 
     future: asyncio.Future[str | None]
-    options: list[PermissionOption]
-    tool_kind: str | None
-    tool_title: str | None
+    request: RequestPermissionRequest
 
 
 # dequeue 五态结果：上层 match 分发文案，pyright 做穷尽检查
@@ -304,7 +301,8 @@ class SessionRegistry:
                 return DequeueIsRunning(entry=entry)
             if entry.uid != uid:
                 return DequeueForbidden(entry=entry)
-            # 锁内 cancel + remove：杜绝"刚 cancel 就抢到 lock 开跑"的窗口；run_prompt 的 finally 再 remove 也无害（pop 幂等）。
+            # 锁内 cancel + remove：杜绝"刚 cancel 就抢到 lock 开跑"的窗口；
+            # run_prompt 的 finally 再 remove 也无害（pop 幂等）。
             entry.task.cancel()
             meta.queue.remove(qid)
             return DequeueOk(entry=entry)
@@ -367,9 +365,7 @@ class SessionRegistry:
     def register_pending(
         self,
         sid: str,
-        options: list[PermissionOption],
-        tool_kind: str | None,
-        tool_title: str | None,
+        request: RequestPermissionRequest,
     ) -> asyncio.Future[str | None]:
         """Create + register a future for an `ask`-mode permission request.
 
@@ -379,9 +375,7 @@ class SessionRegistry:
         self._pending.setdefault(sid, []).append(
             PendingApproval(
                 future=future,
-                options=options,
-                tool_kind=tool_kind,
-                tool_title=tool_title,
+                request=request,
             )
         )
         return future
@@ -423,7 +417,8 @@ class SessionRegistry:
     async def start_cleanup(self) -> None:
         if self._cleanup_task and not self._cleanup_task.done():
             return
-        # 先同步跑完启动 sweep 再起 _loop：create_task 不存引用会被 GC 回收（3.11+ RuntimeWarning），先 sweep 也避免首 tick 竞速。
+        # 先同步跑完启动 sweep 再起 _loop：create_task 不存引用会被 GC 回收；
+        # 先 sweep 也避免首 tick 竞速。
         await self._reap_expired()
         self._cleanup_task = asyncio.get_running_loop().create_task(self._loop(), name="CCUID-cleanup")
 

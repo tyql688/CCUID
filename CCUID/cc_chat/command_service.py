@@ -1,5 +1,3 @@
-from acp.schema import AvailableCommand
-
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 
@@ -8,6 +6,7 @@ from ..utils.msgs import CommandMsg
 from .chat_service import do_chat
 from ..utils.session import REGISTRY
 from ..utils.list_render import RecordItem, RecordField, markdown_records
+from ..utils.acp.schema_types import AvailableCommand
 
 _SLASH_COMMAND_NAME_MAX = 80
 _SLASH_COMMAND_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_. -")

@@ -1,11 +1,10 @@
-import base64
 from dataclasses import dataclass
-
-from acp.schema import TextContentBlock, ImageContentBlock
 
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
+
+from .acp.content import PromptBlock, text_block, image_block
 
 _SIGS = (
     (b"\xff\xd8\xff", "image/jpeg"),
@@ -13,7 +12,6 @@ _SIGS = (
     (b"GIF87a", "image/gif"),
     (b"GIF89a", "image/gif"),
 )
-PromptBlock = TextContentBlock | ImageContentBlock
 _MAX_PROMPT_IMAGES = 4
 _MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_PROMPT_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024
@@ -89,7 +87,7 @@ async def build_prompt(ev: Event, text: str) -> PromptBuildResult:
     images, image_warnings = _filter_image_bytes(await _collect_image_bytes(urls))
     warnings.extend(image_warnings)
     for raw in images:
-        blocks.append(ImageContentBlock(type="image", data=base64.b64encode(raw).decode(), mime_type=_mime(raw)))
+        blocks.append(image_block(raw, _mime(raw)))
     if text:
-        blocks.append(TextContentBlock(type="text", text=text))
+        blocks.append(text_block(text))
     return PromptBuildResult(blocks=blocks, warnings=tuple(warnings))

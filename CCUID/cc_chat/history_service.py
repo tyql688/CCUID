@@ -1,8 +1,6 @@
 from typing import cast
 from pathlib import Path
 
-from acp.schema import SessionInfo
-
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 
@@ -13,6 +11,7 @@ from ..utils.session import REGISTRY
 from ..utils.timefmt import format_local_datetime
 from ..utils.list_render import RecordItem, RecordField, markdown_records
 from ..cc_config.cc_config import CCUIDConfig
+from ..utils.acp.schema_types import SessionInfo
 
 _SESSION_SCOPE_WORKDIR = "workdir"
 _SESSION_SCOPE_ALL = "all"

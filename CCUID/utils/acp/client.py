@@ -16,6 +16,7 @@ from acp.schema import (
     CreateTerminalResponse,
     TerminalOutputResponse,
     ReleaseTerminalResponse,
+    RequestPermissionRequest,
     WaitForTerminalExitResponse,
 )
 
@@ -32,9 +33,7 @@ class PermissionApprovalStore(Protocol):
     def register_pending(
         self,
         sid: str,
-        options: list[PermissionOption],
-        tool_kind: str | None,
-        tool_title: str | None,
+        request: RequestPermissionRequest,
     ) -> asyncio.Future[str | None]: ...
 
     def cancel_pending(self, sid: str, future: asyncio.Future[str | None]) -> None: ...
@@ -63,21 +62,23 @@ class ACPClient(Client):
         """按 PermissionMode 分流：`ask` 挂 future 等用户审批，自动模式直接选对应 kind 的 PermissionOption。"""
         policy: PermissionMode = CCUIDConfig.get_config("PermissionPolicy").data
         if policy == "ask":
-            return await self._ask(options, tool_call)
+            return await self._ask(session_id, options, tool_call)
         decision = decide_auto(options, policy)
-        await self._queue.put(build_event(decision.decision, tool_call, options, decision.matched))
+        await self._queue.put(build_event(decision.decision, session_id, tool_call, options, decision.matched))
         return decision.response
 
     async def _ask(
         self,
+        session_id: str,
         options: list[PermissionOption],
         tool_call: ToolCallUpdate,
     ) -> RequestPermissionResponse:
         """`try/finally` 必须包 `cancel_pending`：否则 CancelledError（restart/LRU evict/shutdown）传播时
         future 会永远留在 _pending 泄漏。cancel_pending 按 identity 找、幂等，take_pending 已 pop 也安全。
         """
-        await self._queue.put(build_event("ask", tool_call, options, matched=True))
-        future = self._approvals.register_pending(self._sid, options, tool_call.kind, tool_call.title)
+        event = build_event("ask", session_id, tool_call, options, matched=True)
+        await self._queue.put(event)
+        future = self._approvals.register_pending(self._sid, event)
         timeout = int(CCUIDConfig.get_config("PromptApproveTimeoutSec").data)
         try:
             option_id = await asyncio.wait_for(future, timeout=timeout)

@@ -9,6 +9,7 @@ from ..utils.errors import user_error
 from ..utils.engines import EngineSpec, resolve, list_engines
 from ..utils.session import REGISTRY, make_sid
 from ..utils.database import CCUIDUserEngine, CCUIDSessionModel, CCUIDSessionNative
+from ..utils.acp.backend import BackendError
 from ..utils.list_render import (
     RecordItem,
     RecordField,
@@ -16,6 +17,7 @@ from ..utils.list_render import (
     markdown_records,
     send_markdown_image_or_text,
 )
+from ..utils.acp.schema_types import ModelInfo, SessionMode
 
 
 async def _engine_status(spec: EngineSpec, ev: Event) -> str:
@@ -64,34 +66,32 @@ async def do_engine_set(bot: Bot, ev: Event, token: str) -> None:
     await bot.send(ChatMsg.engine_set(target.name))
 
 
-def _resolve_model(token: str, available: tuple[tuple[str, str], ...]) -> tuple[str, str] | None:
+def _resolve_model(token: str, available: tuple[ModelInfo, ...]) -> ModelInfo | None:
     low = token.strip().lower()
-    for mid, name in available:
-        if low in (mid.lower(), name.lower()):
-            return mid, name
+    for model in available:
+        if low in (model.model_id.lower(), model.name.lower()):
+            return model
     if low.isdigit():
         idx = int(low) - 1
         if 0 <= idx < len(available):
             return available[idx]
-    matches = [(mid, name) for mid, name in available if low in mid.lower() or low in name.lower()]
+    matches = [model for model in available if low in model.model_id.lower() or low in model.name.lower()]
     return matches[0] if len(matches) == 1 else None
 
 
 def _resolve_mode(
     token: str,
-    available: tuple[tuple[str, str, str | None], ...],
-) -> tuple[str, str, str | None] | None:
+    available: tuple[SessionMode, ...],
+) -> SessionMode | None:
     low = token.strip().lower()
-    for mode_id, name, desc in available:
-        if low in (mode_id.lower(), name.lower()):
-            return mode_id, name, desc
+    for mode in available:
+        if low in (mode.id.lower(), mode.name.lower()):
+            return mode
     if low.isdigit():
         idx = int(low) - 1
         if 0 <= idx < len(available):
             return available[idx]
-    matches = [
-        (mode_id, name, desc) for mode_id, name, desc in available if low in mode_id.lower() or low in name.lower()
-    ]
+    matches = [mode for mode in available if low in mode.id.lower() or low in mode.name.lower()]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -106,8 +106,8 @@ async def do_model_show(bot: Bot, ev: Event, engine: str) -> None:
         await bot.send(ModelMsg.NO_MODELS)
         return
     rows: list[list[object | None]] = []
-    for i, (mid, name) in enumerate(available, 1):
-        rows.append(["✓" if mid == cur_id else "", i, name, mid])
+    for i, model in enumerate(available, 1):
+        rows.append(["✓" if model.model_id == cur_id else "", i, model.name, model.model_id])
     md = f"## {engine} model ({len(available)} 个)\n\n"
     md += markdown_table(["当前", "#", "名称", "ID"], rows)
     md += f"\n\n{ModelMsg.list_hint()}"
@@ -128,18 +128,17 @@ async def do_model_set(bot: Bot, ev: Event, engine: str, token: str) -> None:
     if resolved is None:
         await bot.send(ModelMsg.not_found(token))
         return
-    target_id, _ = resolved
+    target_id = resolved.model_id
     try:
         switched = await backend.set_model(meta.sid, target_id)
-    except Exception as e:
+    except BackendError as e:
         await bot.send(ModelMsg.switch_failed(user_error(e)))
         return
     if switched is None:
         await bot.send(ModelMsg.not_found(token))
         return
-    new_id, new_name = switched
-    await CCUIDSessionModel.store(meta.sid, new_id)
-    await bot.send(ModelMsg.switched(new_id, new_name))
+    await CCUIDSessionModel.store(meta.sid, switched.model_id)
+    await bot.send(ModelMsg.switched(switched.model_id, switched.name))
 
 
 async def do_mode_show(bot: Bot, ev: Event, engine: str) -> None:
@@ -151,16 +150,17 @@ async def do_mode_show(bot: Bot, ev: Event, engine: str) -> None:
     if not available:
         await bot.send(ModeMsg.NO_MODES)
         return
-    records = [
-        RecordItem(
-            f"{'✓ ' if mode_id == cur_id else ''}#{i} {name}",
-            (
-                RecordField("ID", mode_id, code=True),
-                RecordField("说明", desc),
-            ),
+    records: list[RecordItem] = []
+    for i, mode in enumerate(available, 1):
+        records.append(
+            RecordItem(
+                f"{'✓ ' if mode.id == cur_id else ''}#{i} {mode.name}",
+                (
+                    RecordField("ID", mode.id, code=True),
+                    RecordField("说明", mode.description),
+                ),
+            )
         )
-        for i, (mode_id, name, desc) in enumerate(available, 1)
-    ]
     md = markdown_records(f"{engine} mode ({len(available)} 个)", records, footer=ModeMsg.list_hint())
     await send_engine_list(bot, engine, md)
 
@@ -179,14 +179,13 @@ async def do_mode_set(bot: Bot, ev: Event, engine: str, token: str) -> None:
     if resolved is None:
         await bot.send(ModeMsg.not_found(token))
         return
-    target_id, _, _ = resolved
+    target_id = resolved.id
     try:
         switched = await backend.set_mode(meta.sid, target_id)
-    except Exception as e:
+    except BackendError as e:
         await bot.send(ModeMsg.switch_failed(user_error(e)))
         return
     if switched is None:
         await bot.send(ModeMsg.not_found(token))
         return
-    mode_id, name, _ = switched
-    await bot.send(ModeMsg.switched(mode_id, name))
+    await bot.send(ModeMsg.switched(switched.id, switched.name))

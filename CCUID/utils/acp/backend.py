@@ -16,7 +16,9 @@ from acp import (
 )
 from acp.schema import (
     Usage,
+    ModelInfo,
     SessionInfo,
+    SessionMode,
     UsageUpdate,
     Implementation,
     PromptResponse,
@@ -82,36 +84,14 @@ class BackendError(Exception):
 
 @dataclass(slots=True, frozen=True)
 class PromptUsage:
-    """ACP 累积 usage 快照。任一字段 None 表示 agent 没给（各 provider 上报能力不同）。"""
+    """ACP usage 快照：token 用 PromptResponse.usage，ctx/cost 用 UsageUpdate。"""
 
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    cached_read_tokens: int | None = None
-    cached_write_tokens: int | None = None
-    thought_tokens: int | None = None
-    total_tokens: int | None = None
-    ctx_used: int | None = None
-    ctx_size: int | None = None
-    cost_amount: float | None = None
-    cost_currency: str | None = None
+    usage: Usage | None = None
+    update: UsageUpdate | None = None
 
     @property
     def has_any_data(self) -> bool:
-        return any(
-            v is not None
-            for v in (
-                self.input_tokens,
-                self.output_tokens,
-                self.cached_read_tokens,
-                self.cached_write_tokens,
-                self.thought_tokens,
-                self.total_tokens,
-                self.ctx_used,
-                self.ctx_size,
-                self.cost_amount,
-                self.cost_currency,
-            )
-        )
+        return self.usage is not None or self.update is not None
 
 
 @dataclass(slots=True)
@@ -128,11 +108,11 @@ class ACPSession:
     # new/load_session 响应里的当前模型；None = agent 没声明 models（老 adapter），渲染层据此决定是否展示。
     model_id: str | None = None
     model_name: str | None = None
-    # new/load_session 给的整张模型目录 (model_id, name)；`cc 模型` 用，session 期间稳定不重拉。
-    available_models: tuple[tuple[str, str], ...] = ()
+    # new/load_session 给的整张模型目录；`cc 模型` 用，session 期间稳定不重拉。
+    available_models: tuple[ModelInfo, ...] = ()
     config_options: tuple[SessionConfigOptionSelect | SessionConfigOptionBoolean, ...] = ()
     current_mode_id: str | None = None
-    available_modes: tuple[tuple[str, str, str | None], ...] = ()
+    available_modes: tuple[SessionMode, ...] = ()
     available_commands: tuple[AvailableCommand, ...] = ()
     session_title: str | None = None
     session_updated_at: str | None = None
@@ -327,14 +307,14 @@ class ACPBackend:
             return None, None
         return s.model_id, s.model_name
 
-    def list_models(self, sid: str) -> tuple[str | None, tuple[tuple[str, str], ...]]:
-        """返回 (当前 model_id, 全部 (id,name) 对)。session 没起就 (None, ())。"""
+    def list_models(self, sid: str) -> tuple[str | None, tuple[ModelInfo, ...]]:
+        """返回 (当前 model_id, 全部 ModelInfo)。session 没起就 (None, ())。"""
         s = self._sess.get(sid)
         if s is None:
             return None, ()
         return s.model_id, s.available_models
 
-    def list_modes(self, sid: str) -> tuple[str | None, tuple[tuple[str, str, str | None], ...]]:
+    def list_modes(self, sid: str) -> tuple[str | None, tuple[SessionMode, ...]]:
         s = self._sess.get(sid)
         if s is None:
             return None, ()
@@ -367,22 +347,10 @@ class ACPBackend:
         usage = s.last_prompt_usage
         if update is None and usage is None:
             return None
-        cost = update.cost if update is not None else None
-        snap = PromptUsage(
-            input_tokens=usage.input_tokens if usage is not None else None,
-            output_tokens=usage.output_tokens if usage is not None else None,
-            cached_read_tokens=usage.cached_read_tokens if usage is not None else None,
-            cached_write_tokens=usage.cached_write_tokens if usage is not None else None,
-            thought_tokens=usage.thought_tokens if usage is not None else None,
-            total_tokens=usage.total_tokens if usage is not None else None,
-            ctx_used=update.used if update is not None else None,
-            ctx_size=update.size if update is not None else None,
-            cost_amount=cost.amount if cost is not None else None,
-            cost_currency=cost.currency if cost is not None else None,
-        )
+        snap = PromptUsage(usage=usage, update=update)
         return snap if snap.has_any_data else None
 
-    async def set_model(self, sid: str, model_id: str) -> tuple[str, str] | None:
+    async def set_model(self, sid: str, model_id: str) -> ModelInfo | None:
         """切到目录内的 model_id。SetSessionModelResponse 是空响应，本地直接更新缓存的
         (model_id, name)。目录里没有这条返回 None，让上层报 not found。"""
         s = self._sess.get(sid)
@@ -390,52 +358,62 @@ class ACPBackend:
             return None
         if s.rpc_lock.locked():
             raise BackendError("session 正在执行，结束后再切换 model")
-        match = next(((mid, name) for mid, name in s.available_models if mid == model_id), None)
+        match = next((model for model in s.available_models if model.model_id == model_id), None)
         if match is None:
             return None
-        async with s.rpc_lock:
-            if self._sess.get(sid) is not s or s.proc.returncode is not None:
-                return None
-            _, _, _, config_id = _extract_model_config(s.config_options)
-            if config_id is not None:
+        try:
+            async with s.rpc_lock:
+                if self._sess.get(sid) is not s or s.proc.returncode is not None:
+                    return None
+                _, _, _, config_id = _extract_model_config(s.config_options)
+                if config_id is not None:
+                    async with asyncio.timeout(_RPC_MUTATION_TIMEOUT):
+                        resp = await s.conn.set_config_option(config_id=config_id, value=model_id, session_id=s.acp_sid)
+                    if resp is not None:
+                        s.config_options = tuple(resp.config_options)
+                        _apply_response_state(s, resp)
+                    else:
+                        s.model_id, s.model_name = match.model_id, match.name
+                    return match
                 async with asyncio.timeout(_RPC_MUTATION_TIMEOUT):
-                    resp = await s.conn.set_config_option(config_id=config_id, value=model_id, session_id=s.acp_sid)
-                if resp is not None:
-                    s.config_options = tuple(resp.config_options)
-                    _apply_response_state(s, resp)
-                else:
-                    s.model_id, s.model_name = match
-                return match
-            async with asyncio.timeout(_RPC_MUTATION_TIMEOUT):
-                await s.conn.set_session_model(model_id=model_id, session_id=s.acp_sid)
-            s.model_id, s.model_name = match
+                    await s.conn.set_session_model(model_id=model_id, session_id=s.acp_sid)
+                s.model_id, s.model_name = match.model_id, match.name
+        except TimeoutError as e:
+            raise BackendError("切换 model 超时") from e
+        except Exception as e:
+            raise BackendError(f"切换 model 失败: {e}") from e
         return match
 
-    async def set_mode(self, sid: str, mode_id: str) -> tuple[str, str, str | None] | None:
+    async def set_mode(self, sid: str, mode_id: str) -> SessionMode | None:
         s = self._sess.get(sid)
         if s is None:
             return None
         if s.rpc_lock.locked():
             raise BackendError("session 正在执行，结束后再切换 mode")
-        match = next((mode for mode in s.available_modes if mode[0] == mode_id), None)
+        match = next((mode for mode in s.available_modes if mode.id == mode_id), None)
         if match is None:
             return None
-        async with s.rpc_lock:
-            if self._sess.get(sid) is not s or s.proc.returncode is not None:
-                return None
-            _, _, config_id = _extract_mode_config(s.config_options)
-            if config_id is not None:
+        try:
+            async with s.rpc_lock:
+                if self._sess.get(sid) is not s or s.proc.returncode is not None:
+                    return None
+                _, _, config_id = _extract_mode_config(s.config_options)
+                if config_id is not None:
+                    async with asyncio.timeout(_RPC_MUTATION_TIMEOUT):
+                        resp = await s.conn.set_config_option(config_id=config_id, value=mode_id, session_id=s.acp_sid)
+                    if resp is not None:
+                        s.config_options = tuple(resp.config_options)
+                        _apply_response_state(s, resp)
+                    else:
+                        s.current_mode_id = mode_id
+                    return match
                 async with asyncio.timeout(_RPC_MUTATION_TIMEOUT):
-                    resp = await s.conn.set_config_option(config_id=config_id, value=mode_id, session_id=s.acp_sid)
-                if resp is not None:
-                    s.config_options = tuple(resp.config_options)
-                    _apply_response_state(s, resp)
-                else:
-                    s.current_mode_id = mode_id
-                return match
-            async with asyncio.timeout(_RPC_MUTATION_TIMEOUT):
-                await s.conn.set_session_mode(mode_id=mode_id, session_id=s.acp_sid)
-            s.current_mode_id = mode_id
+                    await s.conn.set_session_mode(mode_id=mode_id, session_id=s.acp_sid)
+                s.current_mode_id = mode_id
+        except TimeoutError as e:
+            raise BackendError("切换 mode 超时") from e
+        except Exception as e:
+            raise BackendError(f"切换 mode 失败: {e}") from e
         return match
 
     async def list_agent_sessions(
@@ -824,7 +802,7 @@ class ACPBackend:
             # reapply 失败 / id 已不在 available 时 drop 记录，回 default 不再重试。
             sticky = await CCUIDSessionModel.fetch(sid)
             if sticky is not None and sticky != model_id:
-                sticky_name = next((n for mid, n in available_models if mid == sticky), None)
+                sticky_name = next((model.name for model in available_models if model.model_id == sticky), None)
                 if sticky_name is None:
                     await CCUIDSessionModel.drop(sid)
                 else:

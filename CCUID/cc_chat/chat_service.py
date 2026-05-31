@@ -18,10 +18,11 @@ def _make_preview(text: str) -> str:
 
 def _describe_pending(pending: PendingApproval) -> str:
     parts: list[str] = []
-    if pending.tool_kind is not None:
-        parts.append(f"[{pending.tool_kind}]")
-    if pending.tool_title is not None:
-        parts.append(pending.tool_title)
+    tool_call = pending.request.tool_call
+    if tool_call.kind is not None:
+        parts.append(f"[{tool_call.kind}]")
+    if tool_call.title is not None:
+        parts.append(tool_call.title)
     return " ".join(parts) if parts else ChatMsg.DESC_FALLBACK
 
 
@@ -31,10 +32,10 @@ async def do_approve(bot: Bot, ev: Event, engine: str, *, always: bool) -> None:
         await bot.send(ChatMsg.NO_PENDING)
         return
     target = "allow_always" if always else "allow_once"
-    chosen_option_id = next((opt.option_id for opt in pending.options if opt.kind == target), None)
+    chosen_option_id = next((opt.option_id for opt in pending.request.options if opt.kind == target), None)
     desc = _describe_pending(pending)
     if chosen_option_id is None:
-        offered = ", ".join(opt.kind for opt in pending.options)
+        offered = ", ".join(opt.kind for opt in pending.request.options)
         pending.future.set_result(None)
         await bot.send(ChatMsg.approve_unavailable(target, offered, desc))
         return
@@ -48,12 +49,12 @@ async def do_deny(bot: Bot, ev: Event, engine: str) -> None:
         await bot.send(ChatMsg.NO_PENDING)
         return
     chosen_option_id = next(
-        (opt.option_id for opt in pending.options if opt.kind == "reject_once"),
+        (opt.option_id for opt in pending.request.options if opt.kind == "reject_once"),
         None,
     )
     desc = _describe_pending(pending)
     if chosen_option_id is None:
-        offered = ", ".join(opt.kind for opt in pending.options)
+        offered = ", ".join(opt.kind for opt in pending.request.options)
         pending.future.set_result(None)
         await bot.send(ChatMsg.deny_unavailable(offered, desc))
         return

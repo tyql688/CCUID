@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 from acp.schema import (
     ToolCallUpdate,
     PermissionOption,
@@ -13,8 +15,18 @@ from acp.schema import (
     EmbeddedResourceContentBlock,
 )
 
-from .events import PermissionEvent, PermissionLocation, PermissionOptionView
+from .events import PermissionEvent
 from .policy import PermissionMode
+
+PromptBlock = TextContentBlock | ImageContentBlock
+
+
+def text_block(text: str) -> TextContentBlock:
+    return TextContentBlock(type="text", text=text)
+
+
+def image_block(raw: bytes, mime_type: str) -> ImageContentBlock:
+    return ImageContentBlock(type="image", data=base64.b64encode(raw).decode("ascii"), mime_type=mime_type)
 
 
 def summarize_content(
@@ -53,21 +65,17 @@ def summarize_content(
 
 def build_event(
     decision: PermissionMode,
+    session_id: str,
     tool_call: ToolCallUpdate,
     options: list[PermissionOption],
     matched: bool,
 ) -> PermissionEvent:
-    """Pack a typed ACP request into a frozen PermissionEvent. Single source
+    """Pack a typed ACP request into PermissionEvent. Single source
     of truth so both auto and ask paths render with the same level of detail."""
-    locations = tool_call.locations if tool_call.locations is not None else []
-    location_views = tuple(PermissionLocation(path=loc.path, line=loc.line) for loc in locations)
-    option_views = tuple(PermissionOptionView(kind=opt.kind, name=opt.name, option_id=opt.option_id) for opt in options)
     return PermissionEvent(
         decision=decision,
-        tool_kind=tool_call.kind,
-        tool_title=tool_call.title,
+        session_id=session_id,
+        tool_call=tool_call,
         matched=matched,
-        locations=location_views,
-        content_summary=summarize_content(tool_call.content),
-        options=option_views,
+        options=options,
     )

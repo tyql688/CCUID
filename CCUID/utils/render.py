@@ -21,6 +21,8 @@ from pygments.formatters.html import HtmlFormatter
 
 from gsuid_core.logger import logger
 
+from .acp.content import clean_permission_summary
+
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
@@ -55,27 +57,12 @@ _FONT_URL = re.compile(r"url\([\"']?(fonts/[^)\"']+)[\"']?\)")
 _PLAYWRIGHT_TIMEOUT_MS = 30_000
 _PLAYWRIGHT_INITIAL_HEIGHT = 100
 _RENDER_SEMAPHORE = asyncio.Semaphore(1)
-_PERMISSION_SUMMARY_MAX_CHARS = 1200
 # Cursor IDE 行号引用 info string: `<start>:<end>:<path>`
 _CURSOR_REF_RE = re.compile(r"^(\d+):(\d+):(.+)$")
 
 
 def _text(s: str) -> str:
     return escape(s, quote=False).replace("\n", " ")
-
-
-def clean_permission_summary(summary: str | None) -> str | None:
-    if summary is None:
-        return None
-    text = summary.strip()
-    if text.startswith("text: "):
-        text = text[6:].strip()
-    if text.startswith("Not in allowlist:"):
-        detail = text.removeprefix("Not in allowlist:").strip()
-        text = f"不在允许列表：{detail}" if detail else "不在允许列表"
-    if len(text) > _PERMISSION_SUMMARY_MAX_CHARS:
-        return text[: _PERMISSION_SUMMARY_MAX_CHARS - 1] + "…"
-    return text
 
 
 _PYG_FORMATTER = HtmlFormatter(cssclass="highlight", style="friendly", nowrap=True)

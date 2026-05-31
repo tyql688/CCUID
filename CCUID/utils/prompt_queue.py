@@ -75,8 +75,10 @@ class PromptQueue:
 
     def mark_running(self, qid: int) -> None:
         # 不变式：lock 串行 ⇒ 同一时刻最多一个 qid 在跑
-        assert qid in self._entries, f"mark_running on unknown qid={qid}"
-        assert self._running_qid is None, f"mark_running({qid}) while {self._running_qid} 还在跑"
+        if qid not in self._entries:
+            raise RuntimeError(f"mark_running on unknown qid={qid}")
+        if self._running_qid is not None:
+            raise RuntimeError(f"mark_running({qid}) while {self._running_qid} 还在跑")
         self._running_qid = qid
 
     def mark_done(self, qid: int) -> None:

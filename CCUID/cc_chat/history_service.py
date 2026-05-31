@@ -9,6 +9,7 @@ from ..utils.msgs import RemoteSessionMsg
 from ..utils.errors import user_error
 from ..utils.session import REGISTRY
 from ..utils.timefmt import format_local_datetime
+from ..utils.acp.backend import BackendError
 from ..utils.list_render import RecordItem, RecordField, markdown_records
 from ..cc_config.cc_config import CCUIDConfig
 from ..utils.acp.schema_types import SessionInfo
@@ -102,7 +103,7 @@ async def do_remote_session_list(bot: Bot, ev: Event, engine: str, cursor: str |
     scope = _session_load_scope()
     try:
         supported, sessions, next_cursor = await _list_scoped_sessions(engine, workdir, scope=scope, cursor=cursor)
-    except Exception as e:
+    except BackendError as e:
         await bot.send(RemoteSessionMsg.failed(user_error(e)))
         return
     if not supported:
@@ -159,7 +160,7 @@ async def do_remote_session_resume(bot: Bot, ev: Event, engine: str, token: str)
             return
         session_id = str(target.session_id)
         await REGISTRY.bind_native_session(ev.user_id, ev.group_id, engine, session_id)
-    except Exception as e:
+    except BackendError as e:
         await bot.send(RemoteSessionMsg.resume_failed(user_error(e)))
         return
     await bot.send(RemoteSessionMsg.resumed(session_id, target.title))

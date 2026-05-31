@@ -36,11 +36,11 @@ from .render import (
     render_to_png,
     build_html_body,
     engine_icon_url,
-    clean_permission_summary,
 )
 from .engines import get_engine
 from .acp.events import PermissionEvent
 from .acp.backend import PromptUsage, BackendError
+from .acp.content import summarize_content, clean_permission_summary
 from ..cc_config.cc_config import CCUIDConfig
 
 _AUTO_IMAGE_THRESHOLD = 600
@@ -86,8 +86,6 @@ def _fmt_plan(ev: AgentPlanUpdate) -> str:
 
 
 def _permission_block(ev: PermissionEvent) -> ChatBlock:
-    from .acp.content import summarize_content
-
     return ChatBlock(
         "permission",
         body="",

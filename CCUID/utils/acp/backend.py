@@ -83,6 +83,12 @@ class BackendError(Exception):
 
 
 @dataclass(slots=True, frozen=True)
+class _SpawnedProcess:
+    proc: asyncio.subprocess.Process
+    stderr_task: asyncio.Task[None]
+
+
+@dataclass(slots=True, frozen=True)
 class PromptUsage:
     """ACP usage 快照：token 用 PromptResponse.usage，ctx/cost 用 UsageUpdate。"""
 
@@ -448,26 +454,17 @@ class ACPBackend:
         stderr_task: asyncio.Task[None] | None = None
         stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
         try:
-            os.makedirs(workdir, exist_ok=True)
-            cmd = _resolve_launcher(self.engine.cmd)
-            logger.info(f"[CCUID/{self.engine.name}] list_sessions via {' '.join(cmd)} cwd={workdir}")
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=workdir,
-                limit=_LIMIT,
-                env=_build_spawn_env(self.engine),
+            spawned = await self._spawn_process(
+                workdir,
+                stderr_tail,
+                log_prefix="list_sessions via",
             )
-            record_spawn(proc.pid, self.engine.name)
-            stderr_task = asyncio.create_task(self._pump_stderr(proc, stderr_tail))
-            assert proc.stdin is not None and proc.stdout is not None
+            proc = spawned.proc
+            stderr_task = spawned.stderr_task
             queue: asyncio.Queue[Any] = asyncio.Queue()
             conn = connect_to_agent(
                 ACPClient(queue, f"list-{self.engine.name}", self._approvals),
-                proc.stdin,
-                proc.stdout,
+                *self._stdio(proc),
                 use_unstable_protocol=True,
             )
             async with asyncio.timeout(_HANDSHAKE_TIMEOUT_SEC):
@@ -635,7 +632,8 @@ class ACPBackend:
                 await self._teardown(stale)
                 continue
 
-            assert start_task is not None
+            if start_task is None:
+                raise BackendError("session start task missing")
             try:
                 started = await start_task
             except asyncio.CancelledError:
@@ -711,11 +709,39 @@ class ACPBackend:
             f"[CCUID/{self.engine.name}] 连续 {self._spawn_failures} 次启动失败，熔断 {_SPAWN_COOLDOWN_SEC}s"
         )
 
-    async def _start_session(self, sid: str, workdir: str, resume_id: str | None) -> ACPSession:
+    async def _spawn_process(
+        self,
+        workdir: str,
+        stderr_tail: deque[str],
+        *,
+        log_prefix: str = "",
+    ) -> _SpawnedProcess:
         os.makedirs(workdir, exist_ok=True)
         cmd = _resolve_launcher(self.engine.cmd)
-        logger.info(f"[CCUID/{self.engine.name}] {' '.join(cmd)} cwd={workdir}")
+        prefix = f"{log_prefix} " if log_prefix else ""
+        logger.info(f"[CCUID/{self.engine.name}] {prefix}{' '.join(cmd)} cwd={workdir}")
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workdir,
+            limit=_LIMIT,
+            env=_build_spawn_env(self.engine),
+        )
+        record_spawn(proc.pid, self.engine.name)
+        stderr_task = asyncio.create_task(self._pump_stderr(proc, stderr_tail))
+        return _SpawnedProcess(proc=proc, stderr_task=stderr_task)
 
+    def _stdio(
+        self,
+        proc: asyncio.subprocess.Process,
+    ) -> tuple[asyncio.StreamWriter, asyncio.StreamReader]:
+        if proc.stdin is None or proc.stdout is None:
+            raise BackendError(f"{self.engine.name} 子进程 stdio 不可用")
+        return proc.stdin, proc.stdout
+
+    async def _start_session(self, sid: str, workdir: str, resume_id: str | None) -> ACPSession:
         proc: asyncio.subprocess.Process | None = None
         conn: Any | None = None
         stderr_task: asyncio.Task[None] | None = None
@@ -723,20 +749,10 @@ class ACPBackend:
         queue: asyncio.Queue[Any] = asyncio.Queue()
         client = ACPClient(queue, sid, self._approvals)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=workdir,
-                limit=_LIMIT,
-                env=_build_spawn_env(self.engine),
-            )
-            # 登记到 spawned_pids.json：gscore 被强杀后，下次启动 reap_orphans() 按 PID 清掉孤儿，避免泄露。
-            record_spawn(proc.pid, self.engine.name)
-            stderr_task = asyncio.create_task(self._pump_stderr(proc, stderr_tail))
-            assert proc.stdin is not None and proc.stdout is not None
-            conn = connect_to_agent(client, proc.stdin, proc.stdout, use_unstable_protocol=True)
+            spawned = await self._spawn_process(workdir, stderr_tail)
+            proc = spawned.proc
+            stderr_task = spawned.stderr_task
+            conn = connect_to_agent(client, *self._stdio(proc), use_unstable_protocol=True)
             acp_sid: str
             agent_capabilities: AgentCapabilities | None = None
             session_response: _SessionStateResponse | None = None
@@ -782,7 +798,8 @@ class ACPBackend:
                     new_resp = await conn.new_session(cwd=workdir)
                     acp_sid = new_resp.session_id
                     session_response = new_resp
-            assert session_response is not None
+            if session_response is None:
+                raise BackendError("session init missing response")
             model_id, model_name, available_models = _extract_models(session_response.models)
             current_mode_id, available_modes = _extract_modes(session_response.modes)
             config_options = (
@@ -875,7 +892,8 @@ class ACPBackend:
         record_teardown(s.proc.pid)
 
     async def _pump_stderr(self, proc: asyncio.subprocess.Process, tail: deque[str]) -> None:
-        assert proc.stderr is not None
+        if proc.stderr is None:
+            return
         with contextlib.suppress(Exception):
             async for raw in proc.stderr:
                 line = raw.decode("utf-8", errors="replace").rstrip()

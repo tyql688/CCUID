@@ -19,6 +19,13 @@ from .events import PermissionEvent
 from .policy import PermissionMode
 
 PromptBlock = TextContentBlock | ImageContentBlock
+_PERMISSION_SUMMARY_MAX_CHARS = 1200
+
+
+def _cap_summary(text: str) -> str:
+    if len(text) <= _PERMISSION_SUMMARY_MAX_CHARS:
+        return text
+    return text[: _PERMISSION_SUMMARY_MAX_CHARS - 1] + "…"
 
 
 def text_block(text: str) -> TextContentBlock:
@@ -29,11 +36,22 @@ def image_block(raw: bytes, mime_type: str) -> ImageContentBlock:
     return ImageContentBlock(type="image", data=base64.b64encode(raw).decode("ascii"), mime_type=mime_type)
 
 
+def clean_permission_summary(summary: str | None) -> str | None:
+    if summary is None:
+        return None
+    text = summary.strip()
+    if text.startswith("text: "):
+        text = text[6:].strip()
+    if text.startswith("Not in allowlist:"):
+        detail = text.removeprefix("Not in allowlist:").strip()
+        text = f"不在允许列表：{detail}" if detail else "不在允许列表"
+    return _cap_summary(text)
+
+
 def summarize_content(
     content: list[ContentToolCallContent | FileEditToolCallContent | TerminalToolCallContent] | None,
 ) -> str | None:
-    """Compress ToolCallUpdate.content into a one-line summary. 不截断——完整文本里
-    的换行折成空格就行。"""
+    """Compress ToolCallUpdate.content into a bounded one-line summary."""
     if not content:
         return None
     parts: list[str] = []
@@ -47,7 +65,7 @@ def summarize_content(
         elif isinstance(item, ContentToolCallContent):
             inner = item.content
             if isinstance(inner, TextContentBlock):
-                parts.append(f"text: {inner.text.replace(chr(10), ' ').strip()}")
+                parts.append(f"text: {_cap_summary(inner.text.replace(chr(10), ' ').strip())}")
             elif isinstance(inner, ImageContentBlock):
                 parts.append(f"image ({inner.mime_type})")
             elif isinstance(inner, AudioContentBlock):
@@ -60,7 +78,7 @@ def summarize_content(
                 raise AssertionError(f"unhandled ContentToolCallContent inner: {type(inner).__name__}")
         else:
             raise AssertionError(f"unhandled ToolCallUpdate.content member: {type(item).__name__}")
-    return " · ".join(parts)
+    return _cap_summary(" · ".join(parts))
 
 
 def build_event(

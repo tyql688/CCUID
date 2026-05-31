@@ -213,7 +213,8 @@ class SessionRegistry:
             raise BackendError("session 忙，已拒绝（队列模式可在配置改）")
 
         task = asyncio.current_task()
-        assert task is not None, "run_prompt 必须运行在 asyncio task 里"
+        if task is None:
+            raise RuntimeError("run_prompt 必须运行在 asyncio task 里")
 
         async with self._lock:
             if self._meta.get(meta.sid) is not meta:

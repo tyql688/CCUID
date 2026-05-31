@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from ..cc_config.prefix import cc_prefix
 
 

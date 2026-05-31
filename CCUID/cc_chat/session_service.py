@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 

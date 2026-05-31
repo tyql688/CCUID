@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import shutil
 
 from gsuid_core.bot import Bot

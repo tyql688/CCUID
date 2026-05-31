@@ -1,4 +1,5 @@
-from typing import cast
+from __future__ import annotations
+
 from pathlib import Path
 
 from gsuid_core.bot import Bot
@@ -19,7 +20,7 @@ _SESSION_SCOPE_ALL = "all"
 
 
 def _session_load_scope() -> str:
-    raw = str(cast(object, CCUIDConfig.get_config("SessionLoadScope").data)).strip().lower()
+    raw = str(CCUIDConfig.get_config("SessionLoadScope").data).strip().lower()
     if raw in {_SESSION_SCOPE_ALL, "全部"}:
         return _SESSION_SCOPE_ALL
     return _SESSION_SCOPE_WORKDIR

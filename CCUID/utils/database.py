@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import time
 from typing import ClassVar
 
@@ -7,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.utils.database.base_models import with_session
 
-from .mode import GroupMode
+from .mode import GroupMode, parse_mode
 from .engines import DEFAULT_ENGINE
 
 
@@ -77,7 +79,9 @@ class CCUIDGrantGroup(SQLModel, table=True):
     @with_session
     async def get_mode(cls, session: AsyncSession, gid: str) -> GroupMode:
         row = await session.get(cls, gid)
-        return GroupMode(row.mode) if row else GroupMode.SOLO
+        if row is None:
+            return GroupMode.SOLO
+        return parse_mode(row.mode) or GroupMode.SOLO
 
     @classmethod
     @with_session
@@ -88,7 +92,7 @@ class CCUIDGrantGroup(SQLModel, table=True):
     @with_session
     async def list_all(cls, session: AsyncSession) -> list[tuple[str, GroupMode]]:
         rows = (await session.execute(select(cls))).scalars().all()
-        return sorted((r.group_id, GroupMode(r.mode)) for r in rows)
+        return sorted((r.group_id, parse_mode(r.mode) or GroupMode.SOLO) for r in rows)
 
 
 class CCUIDSessionNative(SQLModel, table=True):

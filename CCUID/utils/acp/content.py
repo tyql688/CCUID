@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+from typing import Literal
+from dataclasses import dataclass
 
 from acp.schema import (
     ToolCallUpdate,
@@ -20,6 +22,13 @@ from .policy import PermissionMode
 
 PromptBlock = TextContentBlock | ImageContentBlock
 _PERMISSION_SUMMARY_MAX_CHARS = 1200
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class PermissionDisplay:
+    label: str
+    state: Literal["pending", "allowed", "denied"]
+    unmatched_text: str | None = None
 
 
 def _cap_summary(text: str) -> str:
@@ -46,6 +55,20 @@ def clean_permission_summary(summary: str | None) -> str | None:
         detail = text.removeprefix("Not in allowlist:").strip()
         text = f"不在允许列表：{detail}" if detail else "不在允许列表"
     return _cap_summary(text)
+
+
+def permission_display(decision: PermissionMode, *, matched: bool) -> PermissionDisplay:
+    if decision == "ask":
+        return PermissionDisplay(label="待审核", state="pending")
+    if not matched:
+        return PermissionDisplay(label="已取消", state="denied", unmatched_text=f"策略 {decision} 没有匹配选项，已取消")
+    if decision == "allow_once":
+        return PermissionDisplay(label="已自动允许", state="allowed")
+    if decision == "allow_always":
+        return PermissionDisplay(label="已自动永久允许", state="allowed")
+    if decision == "reject_once":
+        return PermissionDisplay(label="已自动拒绝", state="denied")
+    raise AssertionError(f"unhandled PermissionMode: {decision!r}")
 
 
 def summarize_content(

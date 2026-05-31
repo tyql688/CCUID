@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 import base64
 import binascii
@@ -40,7 +42,7 @@ from .render import (
 from .engines import get_engine
 from .acp.events import PermissionEvent
 from .acp.backend import PromptUsage, BackendError
-from .acp.content import summarize_content, clean_permission_summary
+from .acp.content import summarize_content, permission_display, clean_permission_summary
 from ..cc_config.cc_config import CCUIDConfig
 
 _AUTO_IMAGE_THRESHOLD = 600
@@ -142,8 +144,6 @@ def _classify(
             err = ev.raw_output.get("error") if isinstance(ev.raw_output, dict) else None
             return ChatBlock("tool_failed", str(err) if err else "failed")
         if tool_display == "full" and ev.content:
-            from .acp.content import summarize_content  # noqa: PLC0415
-
             summary = summarize_content(ev.content)
             if summary:
                 kind = ev.kind if ev.kind is not None else "other"
@@ -229,27 +229,16 @@ def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
             matched = block.meta["matched"]
             locations = block.meta["locations"]
             content_summary = clean_permission_summary(block.meta["content_summary"])
-            if decision == "ask":
-                label = "待审核"
-            elif not matched:
-                label = "已取消"
-            elif decision == "allow_once":
-                label = "已自动允许"
-            elif decision == "allow_always":
-                label = "已自动永久允许"
-            elif decision == "reject_once":
-                label = "已自动拒绝"
-            else:
-                raise AssertionError(f"unhandled PermissionMode: {decision!r}")
-            parts = [label]
+            display = permission_display(decision, matched=matched)
+            parts = [display.label]
             if tool_kind is not None:
                 parts.append(f"[{tool_kind}]")
             line = " · ".join(parts)
             extras: list[str] = []
             if tool_title is not None:
                 extras.append(f"操作：{tool_title}")
-            if not matched:
-                extras.append(f"结果：策略 {decision} 没有匹配选项，已取消")
+            if display.unmatched_text is not None:
+                extras.append(f"结果：{display.unmatched_text}")
             if locations:
                 extras.append(
                     "位置："

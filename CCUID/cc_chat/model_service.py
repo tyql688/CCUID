@@ -1,4 +1,8 @@
+from __future__ import annotations
+
 import shutil
+from typing import TypeVar
+from collections.abc import Callable
 
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
@@ -18,6 +22,8 @@ from ..utils.list_render import (
     send_markdown_image_or_text,
 )
 from ..utils.acp.schema_types import ModelInfo, SessionMode
+
+_T = TypeVar("_T")
 
 
 async def _engine_status(spec: EngineSpec, ev: Event) -> str:
@@ -66,33 +72,35 @@ async def do_engine_set(bot: Bot, ev: Event, token: str) -> None:
     await bot.send(ChatMsg.engine_set(target.name))
 
 
-def _resolve_model(token: str, available: tuple[ModelInfo, ...]) -> ModelInfo | None:
+def _resolve_indexed(
+    token: str,
+    available: tuple[_T, ...],
+    *keys: Callable[[_T], str],
+) -> _T | None:
     low = token.strip().lower()
-    for model in available:
-        if low in (model.model_id.lower(), model.name.lower()):
-            return model
+    if not low:
+        return None
+    for item in available:
+        values = tuple(key(item).lower() for key in keys)
+        if low in values:
+            return item
     if low.isdigit():
         idx = int(low) - 1
         if 0 <= idx < len(available):
             return available[idx]
-    matches = [model for model in available if low in model.model_id.lower() or low in model.name.lower()]
+    matches = [item for item in available if any(low in key(item).lower() for key in keys)]
     return matches[0] if len(matches) == 1 else None
+
+
+def _resolve_model(token: str, available: tuple[ModelInfo, ...]) -> ModelInfo | None:
+    return _resolve_indexed(token, available, lambda model: model.model_id, lambda model: model.name)
 
 
 def _resolve_mode(
     token: str,
     available: tuple[SessionMode, ...],
 ) -> SessionMode | None:
-    low = token.strip().lower()
-    for mode in available:
-        if low in (mode.id.lower(), mode.name.lower()):
-            return mode
-    if low.isdigit():
-        idx = int(low) - 1
-        if 0 <= idx < len(available):
-            return available[idx]
-    matches = [mode for mode in available if low in mode.id.lower() or low in mode.name.lower()]
-    return matches[0] if len(matches) == 1 else None
+    return _resolve_indexed(token, available, lambda mode: mode.id, lambda mode: mode.name)
 
 
 async def do_model_show(bot: Bot, ev: Event, engine: str) -> None:

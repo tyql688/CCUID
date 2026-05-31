@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 import time
 import shutil
@@ -37,10 +39,8 @@ async def _clear_workdir_contents(workdir: str) -> bool:
             if child.is_dir() and not child.is_symlink():
                 shutil.rmtree(child, ignore_errors=True)
             else:
-                try:
+                with contextlib.suppress(OSError):
                     child.unlink()
-                except OSError:
-                    pass
 
     await asyncio.to_thread(_wipe)
     return True
@@ -101,9 +101,8 @@ class DequeueNotFound:
     qid: int
 
 
-@dataclass(slots=True, frozen=True)
 class DequeueNoSession:
-    pass
+    __slots__ = ()
 
 
 @dataclass(slots=True, frozen=True)

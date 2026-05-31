@@ -21,7 +21,7 @@ from pygments.formatters.html import HtmlFormatter
 
 from gsuid_core.logger import logger
 
-from .acp.content import clean_permission_summary
+from .acp.content import permission_display, clean_permission_summary
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
@@ -228,20 +228,9 @@ def _render_permission(block: ChatBlock) -> str:
     matched = block.meta["matched"]
     locations = block.meta["locations"]
     content_summary = clean_permission_summary(block.meta["content_summary"])
-    if decision == "ask":
-        cls, label = "pending", "待审核"
-    elif not matched:
-        cls, label = "denied", "已取消"
-    elif decision == "allow_once":
-        cls, label = "allowed", "已自动允许"
-    elif decision == "allow_always":
-        cls, label = "allowed", "已自动永久允许"
-    elif decision == "reject_once":
-        cls, label = "denied", "已自动拒绝"
-    else:
-        raise AssertionError(f"unhandled PermissionMode: {decision!r}")
+    display = permission_display(decision, matched=matched)
 
-    header_parts = [_tag(label, cls)]
+    header_parts = [_tag(display.label, display.state)]
     if tool_kind is not None:
         header_parts.append(_tag(tool_kind, tool_kind))
     header = f'<div class="cc-perm-head">{"".join(header_parts)}</div>'
@@ -254,11 +243,11 @@ def _render_permission(block: ChatBlock) -> str:
             f'<pre class="cc-perm-command">{escape(tool_title, quote=False)}</pre>'
             "</section>"
         )
-    if not matched:
+    if display.unmatched_text is not None:
         detail_parts.append(
             '<section class="cc-perm-section">'
             '<div class="cc-perm-label">结果</div>'
-            f'<div class="cc-perm-text">策略 <code>{_text(decision)}</code> 没有匹配选项，已取消。</div>'
+            f'<div class="cc-perm-text">{_text(display.unmatched_text)}</div>'
             "</section>"
         )
     if locations:
@@ -279,7 +268,7 @@ def _render_permission(block: ChatBlock) -> str:
             "</section>"
         )
     body = header + "".join(detail_parts)
-    return f'<div class="cc-permission cc-permission-{cls}">{body}</div>'
+    return f'<div class="cc-permission cc-permission-{display.state}">{body}</div>'
 
 
 def build_html_body(blocks: list[ChatBlock], ctx: ImageContext) -> str:

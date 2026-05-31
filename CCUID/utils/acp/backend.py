@@ -66,6 +66,7 @@ _PROXY_URL_ENV_KEYS = (
 _NO_PROXY_ENV_KEYS = ("NO_PROXY", "no_proxy")
 # ACP 握手 (initialize + new/load_session) 总超时：子进程 stdin/stdout 卡死时不让 prompt 永久挂，也兜 npx 冷启动。
 _HANDSHAKE_TIMEOUT_SEC = 60
+_ConfigOption = SessionConfigOptionSelect | SessionConfigOptionBoolean
 _SessionStateResponse = NewSessionResponse | LoadSessionResponse | ResumeSessionResponse
 _ResponseState = _SessionStateResponse | SetSessionConfigOptionResponse | ConfigOptionUpdate
 
@@ -78,8 +79,11 @@ class _ProcessTransportOwner(Protocol):
     _transport: _ClosableTransport | None
 
 
-class BackendError(Exception):
-    pass
+class BackendError(RuntimeError):
+    def __init__(self, message: str, raw: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.raw = raw
 
 
 @dataclass(slots=True, frozen=True)
@@ -116,7 +120,7 @@ class ACPSession:
     model_name: str | None = None
     # new/load_session 给的整张模型目录；`cc 模型` 用，session 期间稳定不重拉。
     available_models: tuple[ModelInfo, ...] = ()
-    config_options: tuple[SessionConfigOptionSelect | SessionConfigOptionBoolean, ...] = ()
+    config_options: tuple[_ConfigOption, ...] = ()
     current_mode_id: str | None = None
     available_modes: tuple[SessionMode, ...] = ()
     available_commands: tuple[AvailableCommand, ...] = ()
@@ -128,6 +132,17 @@ class ACPSession:
     # per-prompt 推理耗时（_run 起跑 → PromptResponse），含权限审批等待
     last_prompt_elapsed: float | None = None
     rpc_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+@dataclass(slots=True, kw_only=True)
+class _SessionPresentation:
+    model_id: str | None
+    model_name: str | None
+    available_models: tuple[ModelInfo, ...]
+    config_options: tuple[_ConfigOption, ...]
+    current_mode_id: str | None
+    available_modes: tuple[SessionMode, ...]
+    model_config_id: str | None
 
 
 def format_tail(tail: deque[str]) -> str:
@@ -197,7 +212,7 @@ def _build_spawn_env(engine: EngineSpec) -> dict[str, str]:
         system_claude = shutil.which("claude")
         if system_claude:
             env["CLAUDE_CODE_EXECUTABLE"] = system_claude
-            logger.info(f"[CCUID/{engine.name}] CLAUDE_CODE_EXECUTABLE={system_claude}")
+            logger.debug(f"[CCUID/{engine.name}] CLAUDE_CODE_EXECUTABLE={system_claude}")
     return env
 
 
@@ -243,7 +258,7 @@ async def _terminate_process(proc: asyncio.subprocess.Process, *, engine_name: s
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_TIMEOUT)
     except ProcessLookupError:
-        pass
+        return
     except Exception as err:
         logger.warning(f"[CCUID/{engine_name}] terminate failed pid={proc.pid}: {err!r}")
 
@@ -289,6 +304,33 @@ def _reset_prompt_state(s: ACPSession) -> None:
     s.last_usage_update = None
     s.last_prompt_usage = None
     s.last_prompt_elapsed = None
+
+
+def _presentation_from_response(response: _SessionStateResponse) -> _SessionPresentation:
+    model_id, model_name, available_models = _extract_models(response.models)
+    current_mode_id, available_modes = _extract_modes(response.modes)
+    config_options = tuple(response.config_options) if response.config_options is not None else ()
+
+    cfg_model_id, cfg_model_name, cfg_available_models, cfg_model_config_id = _extract_model_config(config_options)
+    if cfg_model_id is not None:
+        model_id = cfg_model_id
+        model_name = cfg_model_name
+        available_models = cfg_available_models
+
+    cfg_mode_id, cfg_available_modes, _ = _extract_mode_config(config_options)
+    if cfg_mode_id is not None:
+        current_mode_id = cfg_mode_id
+        available_modes = cfg_available_modes
+
+    return _SessionPresentation(
+        model_id=model_id,
+        model_name=model_name,
+        available_models=available_models,
+        config_options=config_options,
+        current_mode_id=current_mode_id,
+        available_modes=available_modes,
+        model_config_id=cfg_model_config_id,
+    )
 
 
 class ACPBackend:
@@ -719,7 +761,7 @@ class ACPBackend:
         os.makedirs(workdir, exist_ok=True)
         cmd = _resolve_launcher(self.engine.cmd)
         prefix = f"{log_prefix} " if log_prefix else ""
-        logger.info(f"[CCUID/{self.engine.name}] {prefix}{' '.join(cmd)} cwd={workdir}")
+        logger.debug(f"[CCUID/{self.engine.name}] {prefix}{' '.join(cmd)} cwd={workdir}")
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -741,6 +783,79 @@ class ACPBackend:
             raise BackendError(f"{self.engine.name} 子进程 stdio 不可用")
         return proc.stdin, proc.stdout
 
+    async def _initialize_connection(self, conn: Any) -> AgentCapabilities | None:
+        init = await conn.initialize(
+            protocol_version=PROTOCOL_VERSION,
+            client_capabilities=ClientCapabilities(),
+            client_info=Implementation(name="CCUID", version=VERSION),
+        )
+        if init.protocol_version != PROTOCOL_VERSION:
+            logger.warning(f"[CCUID/{self.engine.name}] protocol {init.protocol_version} != {PROTOCOL_VERSION}")
+        return init.agent_capabilities
+
+    async def _open_session(
+        self,
+        conn: Any,
+        *,
+        workdir: str,
+        resume_id: str | None,
+        agent_capabilities: AgentCapabilities | None,
+    ) -> tuple[str, _SessionStateResponse]:
+        if resume_id is None:
+            new_resp = await conn.new_session(cwd=workdir)
+            return new_resp.session_id, new_resp
+
+        if _supports_resume(agent_capabilities):
+            try:
+                return resume_id, await conn.resume_session(cwd=workdir, session_id=resume_id)
+            except Exception as resume_err:
+                logger.warning(f"[CCUID/{self.engine.name}] resume_session 失败，尝试 load_session: {resume_err}")
+
+        if _supports_load(agent_capabilities):
+            try:
+                return resume_id, await conn.load_session(cwd=workdir, session_id=resume_id)
+            except Exception as load_err:
+                logger.warning(f"[CCUID/{self.engine.name}] load_session 失败，创建新 session: {load_err}")
+
+        if not _supports_resume(agent_capabilities) and not _supports_load(agent_capabilities):
+            logger.debug(f"[CCUID/{self.engine.name}] 未声明 resume/load，创建新 session")
+        new_resp = await conn.new_session(cwd=workdir)
+        return new_resp.session_id, new_resp
+
+    async def _reapply_sticky_model(
+        self,
+        conn: Any,
+        *,
+        sid: str,
+        acp_sid: str,
+        state: _SessionPresentation,
+    ) -> None:
+        sticky = await CCUIDSessionModel.fetch(sid)
+        if sticky is None or sticky == state.model_id:
+            return
+
+        sticky_name = next((model.name for model in state.available_models if model.model_id == sticky), None)
+        if sticky_name is None:
+            await CCUIDSessionModel.drop(sid)
+            return
+
+        try:
+            async with asyncio.timeout(_HANDSHAKE_TIMEOUT_SEC):
+                if state.model_config_id is not None:
+                    resp = await conn.set_config_option(
+                        config_id=state.model_config_id,
+                        value=sticky,
+                        session_id=acp_sid,
+                    )
+                    if resp is not None:
+                        state.config_options = tuple(resp.config_options)
+                else:
+                    await conn.set_session_model(model_id=sticky, session_id=acp_sid)
+            state.model_id, state.model_name = sticky, sticky_name
+        except Exception as sticky_err:
+            logger.warning(f"[CCUID/{self.engine.name}] sticky {sticky} reapply: {sticky_err}")
+            await CCUIDSessionModel.drop(sid)
+
     async def _start_session(self, sid: str, workdir: str, resume_id: str | None) -> ACPSession:
         proc: asyncio.subprocess.Process | None = None
         conn: Any | None = None
@@ -753,92 +868,18 @@ class ACPBackend:
             proc = spawned.proc
             stderr_task = spawned.stderr_task
             conn = connect_to_agent(client, *self._stdio(proc), use_unstable_protocol=True)
-            acp_sid: str
-            agent_capabilities: AgentCapabilities | None = None
-            session_response: _SessionStateResponse | None = None
             # 子进程 stdout 卡死会让握手永久挂；一个总超时罩住 initialize + new/load_session，超时由外层 except 清进程。
             async with asyncio.timeout(_HANDSHAKE_TIMEOUT_SEC):
-                init = await conn.initialize(
-                    protocol_version=PROTOCOL_VERSION,
-                    client_capabilities=ClientCapabilities(),
-                    client_info=Implementation(name="CCUID", version=VERSION),
+                agent_capabilities = await self._initialize_connection(conn)
+                acp_sid, session_response = await self._open_session(
+                    conn,
+                    workdir=workdir,
+                    resume_id=resume_id,
+                    agent_capabilities=agent_capabilities,
                 )
-                agent_capabilities = init.agent_capabilities
-                if init.protocol_version != PROTOCOL_VERSION:
-                    logger.warning(f"[CCUID/{self.engine.name}] protocol {init.protocol_version} != {PROTOCOL_VERSION}")
-                if resume_id:
-                    if _supports_resume(agent_capabilities):
-                        try:
-                            session_response = await conn.resume_session(cwd=workdir, session_id=resume_id)
-                            acp_sid = resume_id
-                        except Exception as resume_err:
-                            logger.warning(
-                                f"[CCUID/{self.engine.name}] resume_session 失败，尝试 load_session: {resume_err}"
-                            )
-                            session_response = None
-                            acp_sid = ""
-                    else:
-                        session_response = None
-                        acp_sid = ""
-                    if session_response is None and _supports_load(agent_capabilities):
-                        try:
-                            session_response = await conn.load_session(cwd=workdir, session_id=resume_id)
-                            acp_sid = resume_id
-                        except Exception as load_err:
-                            logger.warning(f"[CCUID/{self.engine.name}] load_session 失败，创建新 session: {load_err}")
-                            session_response = None
-                            acp_sid = ""
-                    if session_response is None:
-                        if not _supports_resume(agent_capabilities) and not _supports_load(agent_capabilities):
-                            logger.info(f"[CCUID/{self.engine.name}] 未声明 resume/load，创建新 session")
-                        new_resp = await conn.new_session(cwd=workdir)
-                        acp_sid = new_resp.session_id
-                        session_response = new_resp
-                else:
-                    new_resp = await conn.new_session(cwd=workdir)
-                    acp_sid = new_resp.session_id
-                    session_response = new_resp
-            if session_response is None:
-                raise BackendError("session init missing response")
-            model_id, model_name, available_models = _extract_models(session_response.models)
-            current_mode_id, available_modes = _extract_modes(session_response.modes)
-            config_options = (
-                tuple(session_response.config_options) if session_response.config_options is not None else ()
-            )
-            cfg_model_id, cfg_model_name, cfg_available_models, cfg_model_config_id = _extract_model_config(
-                config_options
-            )
-            if cfg_model_id is not None:
-                model_id = cfg_model_id
-                model_name = cfg_model_name
-                available_models = cfg_available_models
-            cfg_mode_id, cfg_available_modes, _ = _extract_mode_config(config_options)
-            if cfg_mode_id is not None:
-                current_mode_id = cfg_mode_id
-                available_modes = cfg_available_modes
+            state = _presentation_from_response(session_response)
             # reapply 失败 / id 已不在 available 时 drop 记录，回 default 不再重试。
-            sticky = await CCUIDSessionModel.fetch(sid)
-            if sticky is not None and sticky != model_id:
-                sticky_name = next((model.name for model in available_models if model.model_id == sticky), None)
-                if sticky_name is None:
-                    await CCUIDSessionModel.drop(sid)
-                else:
-                    try:
-                        async with asyncio.timeout(_HANDSHAKE_TIMEOUT_SEC):
-                            if cfg_model_config_id is not None:
-                                resp = await conn.set_config_option(
-                                    config_id=cfg_model_config_id,
-                                    value=sticky,
-                                    session_id=acp_sid,
-                                )
-                                if resp is not None:
-                                    config_options = tuple(resp.config_options)
-                            else:
-                                await conn.set_session_model(model_id=sticky, session_id=acp_sid)
-                        model_id, model_name = sticky, sticky_name
-                    except Exception as sticky_err:
-                        logger.warning(f"[CCUID/{self.engine.name}] sticky {sticky} reapply: {sticky_err}")
-                        await CCUIDSessionModel.drop(sid)
+            await self._reapply_sticky_model(conn, sid=sid, acp_sid=acp_sid, state=state)
         except asyncio.CancelledError:
             await self._cleanup_unregistered_process(conn, proc, stderr_task)
             raise
@@ -863,12 +904,12 @@ class ACPBackend:
             watch_task=watch_task,
             stderr_tail=stderr_tail,
             agent_capabilities=agent_capabilities,
-            model_id=model_id,
-            model_name=model_name,
-            available_models=available_models,
-            config_options=config_options,
-            current_mode_id=current_mode_id,
-            available_modes=available_modes,
+            model_id=state.model_id,
+            model_name=state.model_name,
+            available_models=state.available_models,
+            config_options=state.config_options,
+            current_mode_id=state.current_mode_id,
+            available_modes=state.available_modes,
         )
 
     async def _teardown(self, s: ACPSession) -> None:
@@ -900,7 +941,7 @@ class ACPBackend:
                 if line:
                     line = _cap_stderr_line(line)
                     tail.append(line)
-                    logger.warning(f"[CCUID/{self.engine.name}] {line}")
+                    logger.debug(f"[CCUID/{self.engine.name}] {line}")
 
     async def _watch_exit(self, proc: asyncio.subprocess.Process, queue: asyncio.Queue[Any]) -> None:
         try:

@@ -2,21 +2,20 @@ from __future__ import annotations
 
 import time
 import asyncio
-from typing import Any
 from dataclasses import dataclass
 
 
 @dataclass(slots=True, frozen=True)
 class QueueEntry:
     qid: int
-    task: asyncio.Task[Any]
+    task: asyncio.Task[object]
     uid: str
     preview: str
     enqueued_at: float
 
     @property
     def waited_sec(self) -> int:
-        return int(time.time() - self.enqueued_at)
+        return int(time.monotonic() - self.enqueued_at)
 
 
 class PromptQueue:
@@ -60,7 +59,7 @@ class PromptQueue:
     def snapshot(self) -> list[QueueEntry]:
         return list(self._entries.values())
 
-    def add(self, task: asyncio.Task[Any], uid: str, preview: str) -> QueueEntry:
+    def add(self, task: asyncio.Task[object], uid: str, preview: str) -> QueueEntry:
         qid = self._next_qid
         self._next_qid += 1
         entry = QueueEntry(
@@ -68,7 +67,7 @@ class PromptQueue:
             task=task,
             uid=uid,
             preview=preview,
-            enqueued_at=time.time(),
+            enqueued_at=time.monotonic(),
         )
         self._entries[qid] = entry
         return entry
@@ -94,7 +93,7 @@ class PromptQueue:
 
     def cancel_all_except(
         self,
-        current: asyncio.Task[Any] | None,
+        current: asyncio.Task[object] | None,
     ) -> tuple[list[QueueEntry], bool]:
         """把除 `current` 以外的全部 task cancel 并从队列摘除。
 

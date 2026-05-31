@@ -20,7 +20,9 @@ from acp.schema import (
 from .events import PermissionEvent
 from .policy import PermissionMode
 
-PromptBlock = TextContentBlock | ImageContentBlock
+PromptBlock = (
+    TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
+)
 _PERMISSION_SUMMARY_MAX_CHARS = 1200
 
 
@@ -68,7 +70,7 @@ def permission_display(decision: PermissionMode, *, matched: bool) -> Permission
         return PermissionDisplay(label="已自动永久允许", state="allowed")
     if decision == "reject_once":
         return PermissionDisplay(label="已自动拒绝", state="denied")
-    raise AssertionError(f"unhandled PermissionMode: {decision!r}")
+    raise ValueError(f"unhandled PermissionMode: {decision!r}")
 
 
 def summarize_content(
@@ -98,9 +100,9 @@ def summarize_content(
             elif isinstance(inner, EmbeddedResourceContentBlock):
                 parts.append("embedded resource")
             else:
-                raise AssertionError(f"unhandled ContentToolCallContent inner: {type(inner).__name__}")
+                raise TypeError(f"unhandled ContentToolCallContent inner: {type(inner).__name__}")
         else:
-            raise AssertionError(f"unhandled ToolCallUpdate.content member: {type(item).__name__}")
+            raise TypeError(f"unhandled ToolCallUpdate.content member: {type(item).__name__}")
     return _cap_summary(" · ".join(parts))
 
 

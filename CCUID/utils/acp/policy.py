@@ -26,7 +26,7 @@ def decide_auto(options: list[PermissionOption], policy: PermissionMode) -> Auto
     """Resolve a non-`ask` policy by finding the matching PermissionOption。
     agent 没下发对应 kind 时返回 cancelled——不编造、不挑相近。"""
     if policy == "ask":
-        raise AssertionError("decide_auto must not be called for ask")
+        raise ValueError("decide_auto must not be called for ask")
     for opt in options:
         if opt.kind == policy:
             return AutoDecision(

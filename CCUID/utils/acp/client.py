@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, NoReturn, Protocol
+from typing import NoReturn, Protocol
 
 from acp import Agent, Client, RequestPermissionResponse
 from acp.schema import (
@@ -44,12 +44,12 @@ class ACPClient(Client):
     - inbound event queue (agent → us)
     - per-session sid (ASK 模式时给 SessionRegistry 注册 pending future 用)"""
 
-    def __init__(self, queue: asyncio.Queue[Any], sid: str, approvals: PermissionApprovalStore) -> None:
+    def __init__(self, queue: asyncio.Queue[object], sid: str, approvals: PermissionApprovalStore) -> None:
         self._queue = queue
         self._sid = sid
         self._approvals = approvals
 
-    async def session_update(self, session_id: str, update: Any, **_: Any) -> None:
+    async def session_update(self, session_id: str, update: object, **_: object) -> None:
         await self._queue.put(update)
 
     async def request_permission(
@@ -57,7 +57,7 @@ class ACPClient(Client):
         options: list[PermissionOption],
         session_id: str,
         tool_call: ToolCallUpdate,
-        **_: Any,
+        **_: object,
     ) -> RequestPermissionResponse:
         """按 PermissionMode 分流：`ask` 挂 future 等用户审批，自动模式直接选对应 kind 的 PermissionOption。"""
         policy: PermissionMode = CCUIDConfig.get_config("PermissionPolicy").data
@@ -97,7 +97,7 @@ class ACPClient(Client):
         content: str,
         path: str,
         session_id: str,
-        **_: Any,
+        **_: object,
     ) -> WriteTextFileResponse | None:
         _disabled("fs/write_text_file")
 
@@ -107,7 +107,7 @@ class ACPClient(Client):
         session_id: str,
         limit: int | None = None,
         line: int | None = None,
-        **_: Any,
+        **_: object,
     ) -> ReadTextFileResponse:
         _disabled("fs/read_text_file")
 
@@ -119,7 +119,7 @@ class ACPClient(Client):
         cwd: str | None = None,
         env: list[EnvVariable] | None = None,
         output_byte_limit: int | None = None,
-        **_: Any,
+        **_: object,
     ) -> CreateTerminalResponse:
         _disabled("terminal")
 
@@ -127,7 +127,7 @@ class ACPClient(Client):
         self,
         session_id: str,
         terminal_id: str,
-        **_: Any,
+        **_: object,
     ) -> TerminalOutputResponse:
         _disabled("terminal")
 
@@ -135,7 +135,7 @@ class ACPClient(Client):
         self,
         session_id: str,
         terminal_id: str,
-        **_: Any,
+        **_: object,
     ) -> ReleaseTerminalResponse | None:
         _disabled("terminal")
 
@@ -143,7 +143,7 @@ class ACPClient(Client):
         self,
         session_id: str,
         terminal_id: str,
-        **_: Any,
+        **_: object,
     ) -> WaitForTerminalExitResponse:
         _disabled("terminal")
 
@@ -151,14 +151,14 @@ class ACPClient(Client):
         self,
         session_id: str,
         terminal_id: str,
-        **_: Any,
+        **_: object,
     ) -> KillTerminalResponse | None:
         _disabled("terminal")
 
-    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def ext_method(self, method: str, params: dict[str, object]) -> dict[str, object]:
         _disabled(f"extension method: {method}")
 
-    async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
+    async def ext_notification(self, method: str, params: dict[str, object]) -> None:
         _disabled(f"extension notification: {method}")
 
     def on_connect(self, conn: Agent) -> None:

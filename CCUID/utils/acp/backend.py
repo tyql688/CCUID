@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import asyncio
 import contextlib
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 from collections import deque
 from dataclasses import field, dataclass
 from collections.abc import Callable, Awaitable, AsyncIterator
@@ -38,15 +38,16 @@ from acp.schema import (
 from gsuid_core.logger import logger
 
 from .state import _extract_modes, _extract_models, _extract_mode_config, _extract_model_config
+from ..paths import same_path
 from .client import ACPClient, PermissionApprovalStore
+from .content import PromptBlock
 from .orphans import record_teardown
 from .process import (
     STDERR_TAIL_LINES,
-    CONNECTION_CLOSE_TIMEOUT,
+    CONNECTION_CLOSE_TIMEOUT_SEC,
     stdio,
     close_stdin,
     format_tail,
-    same_workdir,
     spawn_process,
     terminate_process,
     close_process_transport,
@@ -55,6 +56,9 @@ from .process import (
 from ..engines import EngineSpec
 from ...version import VERSION
 from ..database import CCUIDSessionModel
+
+if TYPE_CHECKING:
+    from acp.client.connection import ClientSideConnection
 
 _TRAILING_UPDATE_DRAIN_TIMEOUT = 0.05
 _RPC_MUTATION_TIMEOUT = 30
@@ -90,10 +94,10 @@ class PromptUsage:
 @dataclass(slots=True)
 class ACPSession:
     proc: asyncio.subprocess.Process
-    conn: Any
+    conn: ClientSideConnection
     acp_sid: str
     workdir: str
-    queue: asyncio.Queue[Any]
+    queue: asyncio.Queue[object]
     stderr_task: asyncio.Task[None]
     watch_task: asyncio.Task[None]
     stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=STDERR_TAIL_LINES))
@@ -177,6 +181,29 @@ def _reset_prompt_state(s: ACPSession) -> None:
     s.last_usage_update = None
     s.last_prompt_usage = None
     s.last_prompt_elapsed = None
+
+
+def _cache_stream_state(s: ACPSession, item: object, *, started_at: float | None = None) -> None:
+    if isinstance(item, UsageUpdate):
+        s.last_usage_update = item
+    elif isinstance(item, PromptResponse):
+        if started_at is not None:
+            s.last_prompt_elapsed = time.monotonic() - started_at
+        if item.usage is not None:
+            s.last_prompt_usage = item.usage
+    elif isinstance(item, ConfigOptionUpdate):
+        s.config_options = tuple(item.config_options)
+        _apply_response_state(s, item)
+    elif isinstance(item, CurrentModeUpdate):
+        s.current_mode_id = item.current_mode_id
+    elif isinstance(item, AvailableCommandsUpdate):
+        s.available_commands = tuple(item.available_commands)
+    elif isinstance(item, SessionInfoUpdate):
+        fields = item.model_fields_set
+        if "title" in fields:
+            s.session_title = item.title
+        if "updated_at" in fields:
+            s.session_updated_at = item.updated_at
 
 
 def _presentation_from_response(response: _SessionStateResponse) -> _SessionPresentation:
@@ -360,7 +387,7 @@ class ACPBackend:
             (
                 (sid, s)
                 for sid, s in self._sess.items()
-                if s.proc.returncode is None and not s.rpc_lock.locked() and same_workdir(s.workdir, workdir)
+                if s.proc.returncode is None and not s.rpc_lock.locked() and same_path(s.workdir, workdir)
             ),
             None,
         )
@@ -375,7 +402,7 @@ class ACPBackend:
                     return True, tuple(resp.sessions), resp.next_cursor
 
         proc: asyncio.subprocess.Process | None = None
-        conn: Any | None = None
+        conn: ClientSideConnection | None = None
         stderr_task: asyncio.Task[None] | None = None
         stderr_tail: deque[str] = deque(maxlen=STDERR_TAIL_LINES)
         try:
@@ -387,7 +414,7 @@ class ACPBackend:
             )
             proc = spawned.proc
             stderr_task = spawned.stderr_task
-            queue: asyncio.Queue[Any] = asyncio.Queue()
+            queue: asyncio.Queue[object] = asyncio.Queue()
             conn = connect_to_agent(
                 ACPClient(queue, f"list-{self.engine.name}", self._approvals),
                 *stdio(proc, engine_name=self.engine.name),
@@ -418,9 +445,9 @@ class ACPBackend:
         self,
         sid: str,
         workdir: str,
-        blocks: list[Any],
+        blocks: list[PromptBlock],
         resume_id: str | None = None,
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncIterator[object]:
         s = await self._ensure(sid, workdir, resume_id)
         if any(isinstance(block, ImageContentBlock) for block in blocks) and not _supports_image_prompt(
             s.agent_capabilities
@@ -428,48 +455,6 @@ class ACPBackend:
             raise BackendError(f"{self.engine.name} 当前未声明支持图片输入")
         if s.rpc_lock.locked():
             raise BackendError("session 正在切换配置，稍后再发送")
-
-        async def _run() -> None:
-            try:
-                resp = await s.conn.prompt(prompt=blocks, session_id=s.acp_sid)
-                await s.queue.put(resp)
-            except BaseException as e:  # noqa: BLE001
-                await s.queue.put(e)
-
-        def _cache_item(item: Any) -> None:
-            if isinstance(item, UsageUpdate):
-                s.last_usage_update = item
-            elif isinstance(item, PromptResponse):
-                s.last_prompt_elapsed = time.monotonic() - t0
-                if item.usage is not None:
-                    s.last_prompt_usage = item.usage
-            elif isinstance(item, ConfigOptionUpdate):
-                s.config_options = tuple(item.config_options)
-                _apply_response_state(s, item)
-            elif isinstance(item, CurrentModeUpdate):
-                s.current_mode_id = item.current_mode_id
-            elif isinstance(item, AvailableCommandsUpdate):
-                s.available_commands = tuple(item.available_commands)
-            elif isinstance(item, SessionInfoUpdate):
-                fields = item.model_fields_set
-                if "title" in fields:
-                    s.session_title = item.title
-                if "updated_at" in fields:
-                    s.session_updated_at = item.updated_at
-
-        async def _drain_trailing_updates() -> None:
-            deadline = time.monotonic() + _TRAILING_UPDATE_DRAIN_TIMEOUT
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return
-                try:
-                    item = await asyncio.wait_for(s.queue.get(), timeout=remaining)
-                except TimeoutError:
-                    return
-                if item is None or isinstance(item, BaseException):
-                    continue
-                _cache_item(item)
 
         async with s.rpc_lock:
             if self._sess.get(sid) is not s or s.proc.returncode is not None:
@@ -482,7 +467,7 @@ class ACPBackend:
             # 进新一轮前清掉，否则被新 prompt 的 loop 误当自己的输出（症状：新提问返回上次答案）。
             while not s.queue.empty():
                 s.queue.get_nowait()
-            task = asyncio.create_task(_run())
+            task = asyncio.create_task(self._request_prompt(s, blocks))
             try:
                 while True:
                     item = await s.queue.get()
@@ -493,10 +478,10 @@ class ACPBackend:
                         # prompt 阶段错误（如 codex TLS 重连）：不附 stderr，那坨 noise 进日志够排查了，错误卡只给主因
                         raise BackendError(str(item)) from item
                     # sniff before yield —— footer/render 各自消费
-                    _cache_item(item)
+                    _cache_stream_state(s, item, started_at=t0)
                     yield item
                     if isinstance(item, PromptResponse):
-                        await _drain_trailing_updates()
+                        await self._drain_trailing_updates(s)
                         return
             finally:
                 # 必须 cancel + await：只 cancel 不 await，_run 会继续跑一小段（直到 await prompt 抛
@@ -505,6 +490,27 @@ class ACPBackend:
                     task.cancel()
                 with contextlib.suppress(BaseException):
                     await task
+
+    async def _request_prompt(self, s: ACPSession, blocks: list[PromptBlock]) -> None:
+        try:
+            resp = await s.conn.prompt(prompt=blocks, session_id=s.acp_sid)
+            await s.queue.put(resp)
+        except BaseException as e:  # noqa: BLE001
+            await s.queue.put(e)
+
+    async def _drain_trailing_updates(self, s: ACPSession) -> None:
+        deadline = time.monotonic() + _TRAILING_UPDATE_DRAIN_TIMEOUT
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                item = await asyncio.wait_for(s.queue.get(), timeout=remaining)
+            except TimeoutError:
+                return
+            if item is None or isinstance(item, BaseException):
+                continue
+            _cache_stream_state(s, item)
 
     async def cancel(self, sid: str) -> None:
         s = self._sess.get(sid)
@@ -619,7 +625,7 @@ class ACPBackend:
             f"[CCUID/{self.engine.name}] 连续 {self._spawn_failures} 次启动失败，熔断 {_SPAWN_COOLDOWN_SEC}s"
         )
 
-    async def _initialize_connection(self, conn: Any) -> AgentCapabilities | None:
+    async def _initialize_connection(self, conn: ClientSideConnection) -> AgentCapabilities | None:
         init = await conn.initialize(
             protocol_version=PROTOCOL_VERSION,
             client_capabilities=ClientCapabilities(),
@@ -631,7 +637,7 @@ class ACPBackend:
 
     async def _open_session(
         self,
-        conn: Any,
+        conn: ClientSideConnection,
         *,
         workdir: str,
         resume_id: str | None,
@@ -660,7 +666,7 @@ class ACPBackend:
 
     async def _reapply_sticky_model(
         self,
-        conn: Any,
+        conn: ClientSideConnection,
         *,
         sid: str,
         acp_sid: str,
@@ -694,10 +700,10 @@ class ACPBackend:
 
     async def _start_session(self, sid: str, workdir: str, resume_id: str | None) -> ACPSession:
         proc: asyncio.subprocess.Process | None = None
-        conn: Any | None = None
+        conn: ClientSideConnection | None = None
         stderr_task: asyncio.Task[None] | None = None
         stderr_tail: deque[str] = deque(maxlen=STDERR_TAIL_LINES)
-        queue: asyncio.Queue[Any] = asyncio.Queue()
+        queue: asyncio.Queue[object] = asyncio.Queue()
         client = ACPClient(queue, sid, self._approvals)
         try:
             spawned = await spawn_process(self.engine, workdir, stderr_tail)
@@ -763,14 +769,14 @@ class ACPBackend:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(
                     s.conn.close_session(session_id=s.acp_sid),
-                    timeout=CONNECTION_CLOSE_TIMEOUT,
+                    timeout=CONNECTION_CLOSE_TIMEOUT_SEC,
                 )
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(s.conn.close(), timeout=CONNECTION_CLOSE_TIMEOUT)
+            await asyncio.wait_for(s.conn.close(), timeout=CONNECTION_CLOSE_TIMEOUT_SEC)
         await close_stdin(s.proc)
         await terminate_process(s.proc, engine_name=self.engine.name)
         with contextlib.suppress(BaseException):
-            await asyncio.wait_for(s.watch_task, timeout=CONNECTION_CLOSE_TIMEOUT)
+            await asyncio.wait_for(s.watch_task, timeout=CONNECTION_CLOSE_TIMEOUT_SEC)
         if not s.stderr_task.done():
             s.stderr_task.cancel()
         with contextlib.suppress(BaseException):
@@ -778,7 +784,7 @@ class ACPBackend:
         await close_process_transport(s.proc)
         record_teardown(s.proc.pid)
 
-    async def _watch_exit(self, proc: asyncio.subprocess.Process, queue: asyncio.Queue[Any]) -> None:
+    async def _watch_exit(self, proc: asyncio.subprocess.Process, queue: asyncio.Queue[object]) -> None:
         try:
             await proc.wait()
         finally:

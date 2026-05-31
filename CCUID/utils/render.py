@@ -13,6 +13,7 @@ from dataclasses import field, dataclass
 from pygments import highlight as _pyg_highlight
 from markdown_it import MarkdownIt
 from pygments.util import ClassNotFound
+from pygments.lexer import Lexer
 from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
 from mdit_py_plugins.gfm import gfm_plugin
 from playwright.async_api import async_playwright
@@ -68,7 +69,7 @@ def _text(s: str) -> str:
 _PYG_FORMATTER = HtmlFormatter(cssclass="highlight", style="friendly", nowrap=True)
 
 
-def _resolve_caption_and_lexer(name: str) -> tuple[str | None, Any]:
+def _resolve_caption_and_lexer(name: str) -> tuple[str | None, Lexer | None]:
     """info string → (caption_or_None, lexer_or_None)
     * Cursor 行号引用 `<start>:<end>:<path>` → caption=路径行号, lexer 按 path
     * 已知 lang                             → caption=None (无 figure 包裹), lexer

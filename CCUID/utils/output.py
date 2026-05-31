@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import base64
 import binascii
-from typing import Any, Literal
+from typing import Literal
 from pathlib import Path
 from dataclasses import field, dataclass
 from collections.abc import Callable, Sequence, AsyncIterator
@@ -323,7 +323,7 @@ def _should_image_with_format(blocks: list[ChatBlock], fmt: str) -> bool:
     if fmt == "auto":
         total = sum(_block_render_size(b) for b in blocks)
         return total >= _AUTO_IMAGE_THRESHOLD
-    raise AssertionError(f"unhandled OutputFormat: {fmt!r}")
+    raise ValueError(f"unhandled OutputFormat: {fmt!r}")
 
 
 async def _render_blocks_to_png(blocks: list[ChatBlock], ctx: RenderContext) -> bytes | None:
@@ -412,6 +412,24 @@ _SUPPORTED_AGENT_IMAGE_MIME_TYPES = frozenset(
 )
 
 
+def _resolve_attachment_path(raw: str, sandbox: Path | None) -> Path | None:
+    try:
+        path = Path(raw).expanduser().resolve()
+    except OSError:
+        return None
+    try:
+        if not path.is_file():
+            return None
+        if sandbox is not None and not path.is_relative_to(sandbox):
+            return None
+        size = path.stat().st_size
+    except OSError:
+        return None
+    ext = path.suffix.lstrip(".").lower()
+    limit = _MAX_IMAGE_BYTES if ext in _IMAGE_EXTS else _MAX_FILE_BYTES
+    return path if size <= limit else None
+
+
 def _collect_attachment_paths(blocks: list[ChatBlock], sandbox: Path | None) -> list[Path]:
     """从 block body grep 路径、按大小阈值收。sandbox=None 不限范围；传 Path 只收其内的，挡 /etc/passwd、~/.ssh 等。"""
     seen: set[Path] = set()
@@ -422,26 +440,11 @@ def _collect_attachment_paths(blocks: list[ChatBlock], sandbox: Path | None) -> 
         for raw in _FILE_PATH_RE.findall(block.body):
             if len(out) >= _MAX_REFERENCED_ATTACHMENTS:
                 return out
-            try:
-                p = Path(raw).expanduser().resolve()
-            except OSError:
+            path = _resolve_attachment_path(raw, sandbox)
+            if path is None or path in seen:
                 continue
-            if p in seen:
-                continue
-            seen.add(p)
-            try:
-                if not p.is_file():
-                    continue
-                if sandbox is not None and not p.is_relative_to(sandbox):
-                    continue
-                size = p.stat().st_size
-            except OSError:
-                continue
-            ext = p.suffix.lstrip(".").lower()
-            limit = _MAX_IMAGE_BYTES if ext in _IMAGE_EXTS else _MAX_FILE_BYTES
-            if size > limit:
-                continue
-            out.append(p)
+            seen.add(path)
+            out.append(path)
     return out
 
 
@@ -513,7 +516,7 @@ def _format_usage_footer(usage: PromptUsage) -> str:
 
 async def render(
     bot: Bot,
-    events: AsyncIterator[Any],
+    events: AsyncIterator[object],
     ctx: RenderContext,
     *,
     usage_provider: Callable[[], PromptUsage | None] | None = None,

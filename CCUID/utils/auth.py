@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
 from functools import wraps
 from collections.abc import Callable, Awaitable
 
@@ -21,7 +20,7 @@ async def is_authorized(uid: str, gid: str | None, user_pm: int) -> bool:
     return await CCUIDGrantGroup.exists(gid)
 
 
-def require_auth(fn: Callable[[Bot, Event], Awaitable[Any]]) -> Callable[[Bot, Event], Awaitable[None]]:
+def require_auth(fn: Callable[[Bot, Event], Awaitable[object]]) -> Callable[[Bot, Event], Awaitable[None]]:
     @wraps(fn)
     async def wrapper(bot: Bot, ev: Event) -> None:
         if await is_authorized(ev.user_id, ev.group_id, ev.user_pm):

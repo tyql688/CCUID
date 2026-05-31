@@ -4,7 +4,8 @@ import os
 import shutil
 import asyncio
 import contextlib
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
+from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
 
@@ -13,11 +14,11 @@ from gsuid_core.logger import logger
 from .orphans import record_spawn, record_teardown
 from ..engines import EngineSpec
 
-LIMIT = 50 * 1024 * 1024
-TERMINATE_TIMEOUT = 3
+STREAM_LIMIT_BYTES = 50 * 1024 * 1024
+TERMINATE_TIMEOUT_SEC = 3
 STDERR_TAIL_LINES = 50
 STDERR_LINE_MAX_CHARS = 2000
-CONNECTION_CLOSE_TIMEOUT = 5
+CONNECTION_CLOSE_TIMEOUT_SEC = 5
 PROXY_URL_ENV_KEYS = (
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -35,6 +36,10 @@ class ClosableTransport(Protocol):
 
 class ProcessTransportOwner(Protocol):
     _transport: ClosableTransport | None
+
+
+class AsyncClosable(Protocol):
+    async def close(self) -> None: ...
 
 
 @dataclass(slots=True, frozen=True)
@@ -62,10 +67,6 @@ def resolve_launcher(cmd: tuple[str, ...]) -> tuple[str, ...]:
     if resolved is None:
         return cmd
     return (resolved, *cmd[1:])
-
-
-def same_workdir(a: str, b: str) -> bool:
-    return os.path.abspath(os.path.expanduser(a)) == os.path.abspath(os.path.expanduser(b))
 
 
 def _agent_uses_proxy(engine_name: str) -> bool:
@@ -114,7 +115,7 @@ async def close_stdin(proc: asyncio.subprocess.Process) -> None:
         return
     with contextlib.suppress(Exception):
         stdin.close()
-        await asyncio.wait_for(stdin.wait_closed(), timeout=CONNECTION_CLOSE_TIMEOUT)
+        await asyncio.wait_for(stdin.wait_closed(), timeout=CONNECTION_CLOSE_TIMEOUT_SEC)
 
 
 async def terminate_process(proc: asyncio.subprocess.Process, *, engine_name: str) -> None:
@@ -122,13 +123,13 @@ async def terminate_process(proc: asyncio.subprocess.Process, *, engine_name: st
         return
     try:
         proc.terminate()
-        await asyncio.wait_for(proc.wait(), timeout=TERMINATE_TIMEOUT)
+        await asyncio.wait_for(proc.wait(), timeout=TERMINATE_TIMEOUT_SEC)
     except TimeoutError:
         if proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(proc.wait(), timeout=TERMINATE_TIMEOUT)
+                await asyncio.wait_for(proc.wait(), timeout=TERMINATE_TIMEOUT_SEC)
     except ProcessLookupError:
         return
     except Exception as err:
@@ -176,7 +177,7 @@ async def spawn_process(
     *,
     log_prefix: str = "",
 ) -> SpawnedProcess:
-    os.makedirs(workdir, exist_ok=True)
+    Path(workdir).mkdir(parents=True, exist_ok=True)
     cmd = resolve_launcher(engine.cmd)
     prefix = f"{log_prefix} " if log_prefix else ""
     logger.debug(f"[CCUID/{engine.name}] {prefix}{' '.join(cmd)} cwd={workdir}")
@@ -186,7 +187,7 @@ async def spawn_process(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=workdir,
-        limit=LIMIT,
+        limit=STREAM_LIMIT_BYTES,
         env=build_spawn_env(engine),
     )
     record_spawn(proc.pid, engine.name)
@@ -199,14 +200,14 @@ async def spawn_process(
 
 async def cleanup_unregistered_process(
     *,
-    conn: Any | None,
+    conn: AsyncClosable | None,
     proc: asyncio.subprocess.Process | None,
     stderr_task: asyncio.Task[None] | None,
     engine_name: str,
 ) -> None:
     if conn is not None:
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(conn.close(), timeout=CONNECTION_CLOSE_TIMEOUT)
+            await asyncio.wait_for(conn.close(), timeout=CONNECTION_CLOSE_TIMEOUT_SEC)
     if proc is not None:
         await close_stdin(proc)
         await terminate_process(proc, engine_name=engine_name)

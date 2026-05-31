@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 
 from .common import send_engine_list
 from ..utils.msgs import RemoteSessionMsg
+from ..utils.paths import same_path
 from ..utils.errors import user_error
 from ..utils.session import REGISTRY
 from ..utils.timefmt import format_local_datetime
@@ -30,15 +29,6 @@ def _session_scope_label(scope: str) -> str:
     return "全部" if scope == _SESSION_SCOPE_ALL else "当前工作区"
 
 
-def _same_cwd(a: str | None, b: str) -> bool:
-    if not a:
-        return False
-    try:
-        return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
-    except OSError:
-        return a == b
-
-
 def _session_title(title: str | None) -> str:
     if title is None or title == "":
         return "(无标题)"
@@ -52,7 +42,7 @@ def _filter_current_workdir_sessions(
     with_cwd = [session for session in sessions if session.cwd]
     if not with_cwd:
         return sessions
-    return tuple(session for session in sessions if _same_cwd(session.cwd, workdir))
+    return tuple(session for session in sessions if same_path(session.cwd, workdir))
 
 
 def _filter_sessions_by_scope(

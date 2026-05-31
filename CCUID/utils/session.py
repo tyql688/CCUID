@@ -5,7 +5,6 @@ import time
 import shutil
 import asyncio
 import contextlib
-from typing import Any
 from pathlib import Path
 from dataclasses import field, dataclass
 from collections.abc import AsyncIterator
@@ -16,6 +15,7 @@ from .mode import GroupMode
 from .engines import get_engine
 from .database import CCUIDGrantGroup, CCUIDSessionModel, CCUIDSessionNative
 from .acp.backend import ACPBackend, BackendError
+from .acp.content import PromptBlock
 from .prompt_queue import QueueEntry, PromptQueue
 from .acp.schema_types import RequestPermissionRequest
 from ..cc_config.cc_config import CCUIDConfig
@@ -201,11 +201,11 @@ class SessionRegistry:
         self,
         meta: SessionMeta,
         backend: ACPBackend,
-        blocks: list[Any],
+        blocks: list[PromptBlock],
         *,
         submitter_uid: str,
         preview: str,
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncIterator[object]:
         # BusyBehavior: queue（默认）= 抢 lock 串行；reject = 忙就直接报错
         behavior: str = CCUIDConfig.get_config("BusyBehavior").data
         if behavior == "reject" and meta.queue.is_busy:

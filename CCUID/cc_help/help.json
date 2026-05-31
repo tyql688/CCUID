@@ -126,6 +126,61 @@
       }
     ]
   },
+  "Mode": {
+    "desc": "查看 / 切换当前 engine session 的 mode",
+    "data": [
+      {
+        "name": "mode list",
+        "desc": "列当前 engine session 的可用 mode，标星当前的",
+        "eg": "mode",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "switch mode",
+        "desc": "切到指定 mode_id / 序号 / name 子串",
+        "eg": "mode code",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      }
+    ]
+  },
+  "Session": {
+    "desc": "查看 / 恢复当前 engine 的历史 session",
+    "data": [
+      {
+        "name": "远端session",
+        "desc": "按配置列出可恢复的历史 session，默认当前工作区",
+        "eg": "sessions",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "恢复session",
+        "desc": "绑定 sessions 列表中的历史 session；下一条消息从该会话继续",
+        "eg": "resume 2",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      }
+    ]
+  },
+  "Slash": {
+    "desc": "查看 / 执行当前 engine session 的 slash commands",
+    "data": [
+      {
+        "name": "slash命令",
+        "desc": "slash 查看列表；slash <name> [args] 执行 agent 返回的 slash command",
+        "eg": "slash",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      }
+    ]
+  },
   "查询": {
     "desc": "查看 session 状态与环境健康",
     "data": [

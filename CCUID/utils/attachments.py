@@ -1,4 +1,5 @@
 import base64
+from dataclasses import dataclass
 
 from acp.schema import TextContentBlock, ImageContentBlock
 
@@ -13,6 +14,15 @@ _SIGS = (
     (b"GIF89a", "image/gif"),
 )
 PromptBlock = TextContentBlock | ImageContentBlock
+_MAX_PROMPT_IMAGES = 4
+_MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024
+_MAX_PROMPT_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024
+
+
+@dataclass(slots=True, frozen=True)
+class PromptBuildResult:
+    blocks: list[PromptBlock]
+    warnings: tuple[str, ...] = ()
 
 
 def _mime(data: bytes) -> str:
@@ -24,13 +34,16 @@ def _mime(data: bytes) -> str:
     return "image/png"
 
 
-async def _collect_image_bytes(ev: Event) -> list[bytes]:
-    urls: list[str] = [u for u in ev.image_list if isinstance(u, str) and u]
-    if not urls and ev.image:
-        urls = [ev.image]
+def _image_urls(ev: Event) -> list[str]:
+    urls = [u for u in ev.image_list if isinstance(u, str) and u]
+    if urls:
+        return urls
+    return [ev.image] if ev.image else []
+
+
+async def _collect_image_bytes(urls: list[str]) -> list[bytes]:
     if not urls:
         return []
-    logger.debug(f"[CCUID] build_prompt images={len(urls)} reply={ev.reply!r} at={ev.at!r}")
     try:
         result = await change_ev_image_to_bytes(urls)
     except Exception:
@@ -41,10 +54,42 @@ async def _collect_image_bytes(ev: Event) -> list[bytes]:
     return [b for b in result if b]
 
 
-async def build_prompt(ev: Event, text: str) -> list[PromptBlock]:
+def _limit_image_urls(urls: list[str]) -> tuple[list[str], list[str]]:
+    if len(urls) <= _MAX_PROMPT_IMAGES:
+        return urls, []
+    skipped = len(urls) - _MAX_PROMPT_IMAGES
+    return urls[:_MAX_PROMPT_IMAGES], [f"图片最多 {_MAX_PROMPT_IMAGES} 张，已跳过 {skipped} 张"]
+
+
+def _filter_image_bytes(images: list[bytes]) -> tuple[list[bytes], list[str]]:
+    kept: list[bytes] = []
+    warnings: list[str] = []
+    total = 0
+    for i, raw in enumerate(images, 1):
+        size = len(raw)
+        if size > _MAX_PROMPT_IMAGE_BYTES:
+            warnings.append(f"第 {i} 张图片超过 {_MAX_PROMPT_IMAGE_BYTES // 1024 // 1024}MB，已跳过")
+            continue
+        if total + size > _MAX_PROMPT_IMAGE_TOTAL_BYTES:
+            warnings.append(f"图片总大小超过 {_MAX_PROMPT_IMAGE_TOTAL_BYTES // 1024 // 1024}MB，已跳过后续图片")
+            break
+        kept.append(raw)
+        total += size
+    return kept, warnings
+
+
+async def build_prompt(ev: Event, text: str) -> PromptBuildResult:
     blocks: list[PromptBlock] = []
-    for raw in await _collect_image_bytes(ev):
+    warnings: list[str] = []
+    urls = _image_urls(ev)
+    if urls:
+        urls, url_warnings = _limit_image_urls(urls)
+        warnings.extend(url_warnings)
+    logger.debug(f"[CCUID] build_prompt images={len(urls)} reply={ev.reply!r} at={ev.at!r}")
+    images, image_warnings = _filter_image_bytes(await _collect_image_bytes(urls))
+    warnings.extend(image_warnings)
+    for raw in images:
         blocks.append(ImageContentBlock(type="image", data=base64.b64encode(raw).decode(), mime_type=_mime(raw)))
     if text:
         blocks.append(TextContentBlock(type="text", text=text))
-    return blocks
+    return PromptBuildResult(blocks=blocks, warnings=tuple(warnings))

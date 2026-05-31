@@ -7,10 +7,6 @@ class QueueMsg:
     PREVIEW_ATTACHMENTS_ONLY = "(仅附件)"
 
     @classmethod
-    def header(cls, engine: str, total: int) -> str:
-        return f"**{engine} queue ({total} 条)**"
-
-    @classmethod
     def list_hint(cls) -> str:
         p = cc_prefix()
         return f"{p}dequeue <qid> 删一条；{p}stop 全砍"
@@ -39,7 +35,6 @@ class QueueMsg:
 class ChatMsg:
     NO_PENDING = "没有待审核请求\n刚发过命令时，agent 可能还在处理"
     DESC_FALLBACK = "(无描述)"
-    ENGINES_HEADER = "**CCUID Engines**"
 
     @classmethod
     def approve_unavailable(cls, target: str, offered: str, desc: str) -> str:
@@ -74,10 +69,6 @@ class ChatMsg:
         return f"已打断 {n} 个任务"
 
     @classmethod
-    def yolo_armed(cls, engine: str) -> str:
-        return f"{engine}: 下条 prompt 自动放行所有权限（一次性）"
-
-    @classmethod
     def engine_set(cls, engine: str) -> str:
         return f"engine: {engine}"
 
@@ -85,10 +76,6 @@ class ChatMsg:
 class ModelMsg:
     NO_SESSION = "session 未启动，先发条 prompt 让 agent 起来再查 model"
     NO_MODELS = "当前 engine 没返回 model 列表"
-
-    @classmethod
-    def header(cls, engine: str, total: int) -> str:
-        return f"**{engine} model** (共 {total})"
 
     @classmethod
     def list_hint(cls) -> str:
@@ -106,6 +93,69 @@ class ModelMsg:
     @classmethod
     def switch_failed(cls, err: str) -> str:
         return f"切换失败: {err}"
+
+
+class ModeMsg:
+    NO_SESSION = "session 未启动，先发条 prompt 让 agent 起来再查 mode"
+    NO_MODES = "当前 engine 没返回 mode 列表"
+
+    @classmethod
+    def list_hint(cls) -> str:
+        p = cc_prefix()
+        return f"→ {p}mode <id> 切换；id 可写 mode_id / 序号 / name 子串"
+
+    @classmethod
+    def not_found(cls, token: str) -> str:
+        return f"找不到匹配的 mode: {token}"
+
+    @classmethod
+    def switched(cls, mode_id: str, name: str) -> str:
+        return f"✓ 已切换到 {name} ({mode_id})"
+
+    @classmethod
+    def switch_failed(cls, err: str) -> str:
+        return f"切换失败: {err}"
+
+
+class CommandMsg:
+    NO_SESSION = "session 未启动，先发条 prompt 让 agent 返回 slash commands"
+    EMPTY = "当前 session 没返回 slash commands"
+
+    @classmethod
+    def not_found(cls, token: str) -> str:
+        label = " ".join(token.strip().split())[:120]
+        return f"找不到 slash command: {label}\n先用 {cc_prefix()}slash 查看当前 session 支持的命令"
+
+
+class RemoteSessionMsg:
+    UNSUPPORTED = "当前 engine 未声明支持 session/list"
+    EMPTY = "没有可显示的历史 session"
+    EMPTY_CURRENT_WORKDIR = "当前工作区没有可显示的历史 session"
+
+    @classmethod
+    def usage_resume(cls) -> str:
+        return f"用法：{cc_prefix()}resume <序号|session_id>"
+
+    @classmethod
+    def resume_not_found(cls, token: str, scope_label: str = "当前工作区") -> str:
+        return f"{scope_label}找不到可恢复 session: {token}"
+
+    @classmethod
+    def resumed(cls, session_id: str, title: str | None) -> str:
+        label = "(无标题)" if title is None or title == "" else title
+        return f"已绑定历史 session：{label}\n{session_id}\n下一条消息会从这里继续"
+
+    @classmethod
+    def failed(cls, err: str) -> str:
+        return f"获取 session 列表失败: {err}"
+
+    @classmethod
+    def resume_failed(cls, err: str) -> str:
+        return f"恢复 session 失败: {err}"
+
+    @classmethod
+    def next_cursor(cls, cursor: str) -> str:
+        return f"nextCursor: `{cursor}`"
 
 
 class AdminMsg:
@@ -134,18 +184,3 @@ class AdminMsg:
 
 class StatusMsg:
     NO_ACTIVE = "无活跃 session"
-    ACTIVE_HEADER = "**活跃 session**"
-    DOCTOR_HEADER = "**CCUID 体检**"
-
-    @classmethod
-    def session_line(cls, sid: str, state: str, native: str | None) -> str:
-        suffix = f" native={native}" if native else ""
-        return f"- {sid}: {state}{suffix}"
-
-    @classmethod
-    def doctor_ok(cls, engine: str) -> str:
-        return f"- {engine}: ok"
-
-    @classmethod
-    def doctor_missing(cls, engine: str, launcher: str, install_url: str) -> str:
-        return f"- {engine}: missing `{launcher}` → 装法 {install_url}"

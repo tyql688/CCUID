@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, NoReturn, Protocol
 
 from acp import Agent, Client, RequestPermissionResponse
 from acp.schema import (
@@ -24,16 +24,31 @@ from .content import build_event
 from ...cc_config.cc_config import CCUIDConfig
 
 
+def _disabled(feature: str) -> NoReturn:
+    raise NotImplementedError(f"CCUID client {feature} capability is disabled")
+
+
+class PermissionApprovalStore(Protocol):
+    def register_pending(
+        self,
+        sid: str,
+        options: list[PermissionOption],
+        tool_kind: str | None,
+        tool_title: str | None,
+    ) -> asyncio.Future[str | None]: ...
+
+    def cancel_pending(self, sid: str, future: asyncio.Future[str | None]) -> None: ...
+
+
 class ACPClient(Client):
     """One ACPClient per ACPSession. 持有：
     - inbound event queue (agent → us)
     - per-session sid (ASK 模式时给 SessionRegistry 注册 pending future 用)"""
 
-    def __init__(self, queue: asyncio.Queue[Any], sid: str) -> None:
+    def __init__(self, queue: asyncio.Queue[Any], sid: str, approvals: PermissionApprovalStore) -> None:
         self._queue = queue
         self._sid = sid
-        # `cc 下次允许` 一次性 yolo flag：backend.prompt() 前 set，request_permission 据此走默认 policy 或 allow_always。
-        self.auto_approve_this_prompt: bool = False
+        self._approvals = approvals
 
     async def session_update(self, session_id: str, update: Any, **_: Any) -> None:
         await self._queue.put(update)
@@ -41,17 +56,12 @@ class ACPClient(Client):
     async def request_permission(
         self,
         options: list[PermissionOption],
-        *,
         session_id: str,
         tool_call: ToolCallUpdate,
         **_: Any,
     ) -> RequestPermissionResponse:
-        """按 PermissionMode 分流：`ask` 挂 future 等用户审批，自动模式直接选对应 kind 的 PermissionOption。
-        `auto_approve_this_prompt`=True 时无视 config，本轮全按 allow_always（`cc 下次允许` 一次性 yolo）。"""
-        if self.auto_approve_this_prompt:
-            policy: PermissionMode = "allow_always"
-        else:
-            policy = CCUIDConfig.get_config("PermissionPolicy").data
+        """按 PermissionMode 分流：`ask` 挂 future 等用户审批，自动模式直接选对应 kind 的 PermissionOption。"""
+        policy: PermissionMode = CCUIDConfig.get_config("PermissionPolicy").data
         if policy == "ask":
             return await self._ask(options, tool_call)
         decision = decide_auto(options, policy)
@@ -63,22 +73,18 @@ class ACPClient(Client):
         options: list[PermissionOption],
         tool_call: ToolCallUpdate,
     ) -> RequestPermissionResponse:
-        """Lazy import REGISTRY 避免与 session.py 循环依赖（它 import 本包的 ACPBackend）。
-
-        `try/finally` 必须包 `cancel_pending`：否则 CancelledError（restart/LRU evict/shutdown）传播时
+        """`try/finally` 必须包 `cancel_pending`：否则 CancelledError（restart/LRU evict/shutdown）传播时
         future 会永远留在 _pending 泄漏。cancel_pending 按 identity 找、幂等，take_pending 已 pop 也安全。
         """
-        from ..session import REGISTRY
-
         await self._queue.put(build_event("ask", tool_call, options, matched=True))
-        future = REGISTRY.register_pending(self._sid, options, tool_call.kind, tool_call.title)
+        future = self._approvals.register_pending(self._sid, options, tool_call.kind, tool_call.title)
         timeout = int(CCUIDConfig.get_config("PromptApproveTimeoutSec").data)
         try:
             option_id = await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError:
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
         finally:
-            REGISTRY.cancel_pending(self._sid, future)
+            self._approvals.cancel_pending(self._sid, future)
         if option_id is None:
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
         return RequestPermissionResponse(
@@ -92,7 +98,7 @@ class ACPClient(Client):
         session_id: str,
         **_: Any,
     ) -> WriteTextFileResponse | None:
-        raise NotImplementedError("CCUID client fs/write_text_file capability is disabled")
+        _disabled("fs/write_text_file")
 
     async def read_text_file(
         self,
@@ -102,7 +108,7 @@ class ACPClient(Client):
         line: int | None = None,
         **_: Any,
     ) -> ReadTextFileResponse:
-        raise NotImplementedError("CCUID client fs/read_text_file capability is disabled")
+        _disabled("fs/read_text_file")
 
     async def create_terminal(
         self,
@@ -114,7 +120,7 @@ class ACPClient(Client):
         output_byte_limit: int | None = None,
         **_: Any,
     ) -> CreateTerminalResponse:
-        raise NotImplementedError("CCUID client terminal capability is disabled")
+        _disabled("terminal")
 
     async def terminal_output(
         self,
@@ -122,7 +128,7 @@ class ACPClient(Client):
         terminal_id: str,
         **_: Any,
     ) -> TerminalOutputResponse:
-        raise NotImplementedError("CCUID client terminal capability is disabled")
+        _disabled("terminal")
 
     async def release_terminal(
         self,
@@ -130,7 +136,7 @@ class ACPClient(Client):
         terminal_id: str,
         **_: Any,
     ) -> ReleaseTerminalResponse | None:
-        raise NotImplementedError("CCUID client terminal capability is disabled")
+        _disabled("terminal")
 
     async def wait_for_terminal_exit(
         self,
@@ -138,7 +144,7 @@ class ACPClient(Client):
         terminal_id: str,
         **_: Any,
     ) -> WaitForTerminalExitResponse:
-        raise NotImplementedError("CCUID client terminal capability is disabled")
+        _disabled("terminal")
 
     async def kill_terminal(
         self,
@@ -146,13 +152,13 @@ class ACPClient(Client):
         terminal_id: str,
         **_: Any,
     ) -> KillTerminalResponse | None:
-        raise NotImplementedError("CCUID client terminal capability is disabled")
+        _disabled("terminal")
 
     async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError(f"CCUID client extension method is disabled: {method}")
+        _disabled(f"extension method: {method}")
 
     async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
-        raise NotImplementedError(f"CCUID client extension notification is disabled: {method}")
+        _disabled(f"extension notification: {method}")
 
     def on_connect(self, conn: Agent) -> None:
         return None

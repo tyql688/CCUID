@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import json
 
 import psutil
@@ -17,16 +18,28 @@ _TERMINATE_GRACE_SEC = 3.0
 def _load() -> dict[str, str]:
     if not _PID_FILE.exists():
         return {}
-    raw = _PID_FILE.read_text()
+    try:
+        raw = _PID_FILE.read_text()
+    except OSError:
+        logger.warning(f"[CCUID] read orphan pid file failed: {_PID_FILE}")
+        return {}
     if not raw.strip():
         return {}
-    data = json.loads(raw)
-    return data if isinstance(data, dict) else {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning(f"[CCUID] orphan pid file is invalid json, ignored: {_PID_FILE}")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {pid: hint for pid, hint in data.items() if isinstance(pid, str) and isinstance(hint, str)}
 
 
 def _save(data: dict[str, str]) -> None:
     _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _PID_FILE.write_text(json.dumps(data))
+    tmp = _PID_FILE.with_suffix(f"{_PID_FILE.suffix}.tmp")
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, _PID_FILE)
 
 
 def record_spawn(pid: int, cmd_hint: str) -> None:
@@ -52,7 +65,10 @@ def reap_orphans() -> int:
         return 0
     killed = 0
     for pid_str, hint in data.items():
-        pid = int(pid_str)
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            continue
         proc = _try_get_proc(pid, hint)
         if proc is None:
             continue

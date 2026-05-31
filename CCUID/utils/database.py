@@ -1,4 +1,5 @@
 import time
+from typing import ClassVar
 
 from sqlmodel import Field, SQLModel
 from sqlalchemy import select
@@ -15,7 +16,7 @@ def _group_key(gid: str | None) -> str:
 
 
 class CCUIDGrantUser(SQLModel, table=True):
-    __tablename__: str = "ccuid_grant_user"
+    __tablename__: ClassVar[str] = "ccuid_grant_user"  # pyright: ignore[reportIncompatibleVariableOverride]
     user_id: str = Field(primary_key=True, max_length=128)
 
     @classmethod
@@ -48,7 +49,7 @@ class CCUIDGrantUser(SQLModel, table=True):
 
 
 class CCUIDGrantGroup(SQLModel, table=True):
-    __tablename__: str = "ccuid_grant_group"
+    __tablename__: ClassVar[str] = "ccuid_grant_group"  # pyright: ignore[reportIncompatibleVariableOverride]
     group_id: str = Field(primary_key=True, max_length=128)
     mode: str = Field(default=GroupMode.SOLO.value, max_length=16)
 
@@ -91,7 +92,7 @@ class CCUIDGrantGroup(SQLModel, table=True):
 
 
 class CCUIDSessionNative(SQLModel, table=True):
-    __tablename__: str = "ccuid_session_native"
+    __tablename__: ClassVar[str] = "ccuid_session_native"  # pyright: ignore[reportIncompatibleVariableOverride]
     session_id: str = Field(primary_key=True, max_length=256)
     native_id: str = Field(default="", max_length=128)
     updated_at: int = Field(default=0)
@@ -134,7 +135,7 @@ class CCUIDSessionModel(SQLModel, table=True):
     """用户在该 sid 上手动选的 model_id；ACP 协议没有「session 创建时带 model」的口子，
     backend._ensure 拿到 session 后会读这张表 reapply 一次，让选择跨进程 / cc new 粘住。"""
 
-    __tablename__: str = "ccuid_session_model"
+    __tablename__: ClassVar[str] = "ccuid_session_model"  # pyright: ignore[reportIncompatibleVariableOverride]
     session_id: str = Field(primary_key=True, max_length=256)
     model_id: str = Field(default="", max_length=256)
     updated_at: int = Field(default=0)
@@ -166,7 +167,7 @@ class CCUIDSessionModel(SQLModel, table=True):
 
 
 class CCUIDUserEngine(SQLModel, table=True):
-    __tablename__: str = "ccuid_user_engine"
+    __tablename__: ClassVar[str] = "ccuid_user_engine"  # pyright: ignore[reportIncompatibleVariableOverride]
     user_id: str = Field(primary_key=True, max_length=128)
     group_id: str = Field(primary_key=True, max_length=128, default="")
     engine: str = Field(max_length=32, default=DEFAULT_ENGINE)

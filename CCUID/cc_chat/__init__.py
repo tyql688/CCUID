@@ -2,23 +2,20 @@ from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 
-from .service import (
-    do_new,
-    do_chat,
-    do_deny,
-    do_stop,
-    do_clear,
-    do_approve,
-    do_arm_yolo,
+from .common import current_engine
+from ..utils.auth import require_auth
+from .chat_service import do_chat, do_deny, do_approve
+from .model_service import (
+    do_mode_set,
+    do_mode_show,
     do_model_set,
     do_engine_set,
     do_model_show,
-    do_queue_list,
-    current_engine,
     do_engine_show,
-    do_queue_remove,
 )
-from ..utils.auth import require_auth
+from .command_service import do_slash
+from .history_service import do_remote_session_list, do_remote_session_resume
+from .session_service import do_new, do_stop, do_clear, do_queue_list, do_queue_remove
 
 sv_cmd = SV("CCUID 命令", priority=5)
 sv_chat = SV("CCUID 对话", priority=10)
@@ -58,6 +55,37 @@ async def model(bot: Bot, ev: Event) -> None:
         await do_model_set(bot, ev, cur, arg)
 
 
+@sv_cmd.on_command(("mode", "模式"), block=True)
+@require_auth
+async def mode(bot: Bot, ev: Event) -> None:
+    arg = ev.text.strip()
+    cur = await current_engine(ev)
+    if not arg:
+        await do_mode_show(bot, ev, cur)
+    else:
+        await do_mode_set(bot, ev, cur, arg)
+
+
+@sv_cmd.on_command(("slash",), block=True)
+@require_auth
+async def slash(bot: Bot, ev: Event) -> None:
+    await do_slash(bot, ev, await current_engine(ev), ev.text.strip())
+
+
+@sv_cmd.on_command(("sessions", "session", "会话"), block=True)
+@require_auth
+async def sessions(bot: Bot, ev: Event) -> None:
+    raw = ev.text.strip()
+    cursor = raw if raw else None
+    await do_remote_session_list(bot, ev, await current_engine(ev), cursor)
+
+
+@sv_cmd.on_command(("resume", "恢复"), block=True)
+@require_auth
+async def resume(bot: Bot, ev: Event) -> None:
+    await do_remote_session_resume(bot, ev, await current_engine(ev), ev.text.strip())
+
+
 @sv_cmd.on_fullmatch(("停", "stop"), block=True)
 @require_auth
 async def stop(bot: Bot, ev: Event) -> None:
@@ -89,12 +117,6 @@ async def new(bot: Bot, ev: Event) -> None:
 @require_auth
 async def clear(bot: Bot, ev: Event) -> None:
     await do_clear(bot, ev, await current_engine(ev))
-
-
-@sv_cmd.on_fullmatch(("下次允许", "yolo"), block=True)
-@require_auth
-async def arm_yolo(bot: Bot, ev: Event) -> None:
-    await do_arm_yolo(bot, ev, await current_engine(ev))
 
 
 @sv_chat.on_prefix("")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import base64
+import asyncio
 from html import escape
 from typing import TYPE_CHECKING, Any, Literal
 from pathlib import Path
@@ -53,6 +54,8 @@ _FONT_URL = re.compile(r"url\([\"']?(fonts/[^)\"']+)[\"']?\)")
 
 _PLAYWRIGHT_TIMEOUT_MS = 30_000
 _PLAYWRIGHT_INITIAL_HEIGHT = 100
+_RENDER_SEMAPHORE = asyncio.Semaphore(1)
+_PERMISSION_SUMMARY_MAX_CHARS = 1200
 # Cursor IDE 行号引用 info string: `<start>:<end>:<path>`
 _CURSOR_REF_RE = re.compile(r"^(\d+):(\d+):(.+)$")
 
@@ -69,7 +72,9 @@ def clean_permission_summary(summary: str | None) -> str | None:
         text = text[6:].strip()
     if text.startswith("Not in allowlist:"):
         detail = text.removeprefix("Not in allowlist:").strip()
-        return f"不在允许列表：{detail}" if detail else "不在允许列表"
+        text = f"不在允许列表：{detail}" if detail else "不在允许列表"
+    if len(text) > _PERMISSION_SUMMARY_MAX_CHARS:
+        return text[: _PERMISSION_SUMMARY_MAX_CHARS - 1] + "…"
     return text
 
 
@@ -119,20 +124,18 @@ def _highlight_fence(code: str, name: str, _attrs: str) -> str:
 def _build_md_engine() -> MarkdownIt:
     """commonmark + GFM 全套（table/strikethrough/autolink/tasklist/alerts/footnote + dollarmath）+ deflist。
 
-    要点：
-    * GFM 严格表格语义：下一行不含 `|` 即关闭，不卷吞后文（旧 python-markdown 会把 `---`/`## H2`/mermaid 卷进 `<td>`）。
-    * `html=True`：build_markdown 把 `<div class="cc-header">` chrome 拼进字符串，需 raw HTML pass-through。
-    * dollarmath → `<span/div class="math ...">`，chat.js 据此渲 katex。
-    * `> [!NOTE]` 等 alert → `<div class="markdown-alert ...">`。
+    GFM 表格、math、alert、deflist 由 MarkdownIt 处理。raw HTML 关闭，避免 agent
+    正文里的 HTML 直接进入 Chromium；代码高亮/mermaid 由 renderer 生成可信 HTML。
     """
-    md = MarkdownIt("commonmark", {"highlight": _highlight_fence, "html": True, "linkify": True})
+    md = MarkdownIt("commonmark", {"highlight": _highlight_fence, "html": False, "linkify": True})
     md.enable("linkify")
+    md.disable("image")
     md.use(gfm_plugin, dollarmath=True)
     md.use(deflist_plugin)
     return md
 
 
-_MD_ENGINE = _build_md_engine()
+_UNTRUSTED_MD_ENGINE = _build_md_engine()
 
 BlockKind = Literal[
     "agent_md",
@@ -172,6 +175,7 @@ class ImageContext:
     model_label: str | None = None  # e.g. "claude-sonnet-4-7"；None 隐藏
     elapsed_sec: float | None = None  # per-prompt 推理耗时；None 隐藏（mid-stream flush 用）
     icon_url: str | None = None  # engine logo data URI；None 不渲 logo
+    render_style: Literal["chat", "list"] = "chat"
 
 
 def _tag(label: str, kind: str = "") -> str:
@@ -185,8 +189,13 @@ _BLOCK_MARKER = re.compile(r"^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>\s|```)")
 
 
 def _normalize_blocks(md: str) -> str:
-    md = _HEADING_INLINE.sub(r"\1\n\n\2", md)
-    lines = md.split("\n")
+    expanded: list[str] = []
+    for line in md.split("\n"):
+        if line.lstrip().startswith("|"):
+            expanded.append(line)
+        else:
+            expanded.extend(_HEADING_INLINE.sub(r"\1\n\n\2", line).split("\n"))
+    lines = expanded
     out: list[str] = []
     for i, line in enumerate(lines):
         if i > 0 and lines[i - 1].strip() and not _BLOCK_MARKER.match(lines[i - 1]) and _BLOCK_MARKER.match(line):
@@ -195,9 +204,13 @@ def _normalize_blocks(md: str) -> str:
     return "\n".join(out)
 
 
+def _render_untrusted_markdown(md: str) -> str:
+    return _UNTRUSTED_MD_ENGINE.render(_normalize_blocks(md.rstrip()))
+
+
 def _render_block(block: ChatBlock) -> str:
     if block.kind == "agent_md":
-        return _normalize_blocks(block.body.rstrip())
+        return _render_untrusted_markdown(block.body)
     if block.kind == "agent_image":
         return ""
     if block.kind == "think":
@@ -208,7 +221,7 @@ def _render_block(block: ChatBlock) -> str:
     if block.kind == "tool_failed":
         return f'<div class="cc-tool cc-tool-failed">{_tag("failed", "failed")}{_text(block.body)}</div>'
     if block.kind == "plan":
-        return block.body
+        return _render_untrusted_markdown(block.body)
     if block.kind == "mode":
         return f'<div class="cc-aux">{_tag("mode")}{_text(block.body)}</div>'
     if block.kind == "error":
@@ -228,7 +241,6 @@ def _render_permission(block: ChatBlock) -> str:
     matched = block.meta["matched"]
     locations = block.meta["locations"]
     content_summary = clean_permission_summary(block.meta["content_summary"])
-    hint = ""
     if decision == "ask":
         cls, label = "pending", "待审核"
     elif not matched:
@@ -279,12 +291,12 @@ def _render_permission(block: ChatBlock) -> str:
             f'<div class="cc-perm-text">{_text(content_summary)}</div>'
             "</section>"
         )
-    body = header + "".join(detail_parts) + hint
+    body = header + "".join(detail_parts)
     return f'<div class="cc-permission cc-permission-{cls}">{body}</div>'
 
 
-def build_markdown(blocks: list[ChatBlock], ctx: ImageContext) -> str:
-    ts = datetime.now().strftime("%H:%M:%S")
+def build_html_body(blocks: list[ChatBlock], ctx: ImageContext) -> str:
+    ts = datetime.now().astimezone().strftime("%H:%M:%S")
     elapsed_span = (
         f'<span class="cc-elapsed">{_format_duration(ctx.elapsed_sec)}</span>' if ctx.elapsed_sec is not None else ""
     )
@@ -302,9 +314,13 @@ def build_markdown(blocks: list[ChatBlock], ctx: ImageContext) -> str:
     )
     header = f'<div class="cc-header">{top}</div>{sub}'
     parts: list[str] = [header, ""]
+    if ctx.render_style == "list":
+        parts.append('<main class="cc-list-body">')
     for block in blocks:
         parts.append(_render_block(block))
         parts.append("")
+    if ctx.render_style == "list":
+        parts.append("</main>")
     return "\n".join(parts).strip()
 
 
@@ -342,8 +358,7 @@ def _pygments_css() -> str:
     return HtmlFormatter(cssclass="highlight", style="friendly").get_style_defs(".highlight")
 
 
-def _html_doc(md: str) -> str:
-    body = _MD_ENGINE.render(md)
+def _html_doc(body: str) -> str:
     css = f"{_katex_css()}{_chat_css()}{_pygments_css()}"
     return (
         _chat_html().replace("{{ asset_base }}", _ASSETS.as_uri()).replace("{{ css }}", css).replace("{{ body }}", body)
@@ -363,26 +378,30 @@ async def _render_extras(page: Page) -> None:
     await page.evaluate("window.ccuidRenderExtras()")
 
 
-async def render_to_png(md: str, *, max_width: int = 720, scale: int = 2) -> bytes | None:
+async def render_to_png(body_html: str, *, max_width: int = 720, scale: int = 2) -> bytes | None:
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            try:
-                context = await browser.new_context(
-                    color_scheme="light",
-                    device_scale_factor=scale,
-                    java_script_enabled=True,
-                    locale="zh-CN",
-                    viewport={"width": max_width, "height": _PLAYWRIGHT_INITIAL_HEIGHT},
-                )
-                page = await context.new_page()
-                page.set_default_timeout(_PLAYWRIGHT_TIMEOUT_MS)
-                await page.set_content(_html_doc(md), wait_until="load", timeout=_PLAYWRIGHT_TIMEOUT_MS)
-                await _render_extras(page)
-                await page.evaluate("document.fonts.ready")
-                return await page.locator("body").screenshot(type="png", timeout=_PLAYWRIGHT_TIMEOUT_MS)
-            finally:
-                await browser.close()
+        async with _RENDER_SEMAPHORE:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                try:
+                    context = await browser.new_context(
+                        color_scheme="light",
+                        device_scale_factor=scale,
+                        java_script_enabled=True,
+                        locale="zh-CN",
+                        viewport={
+                            "width": max_width,
+                            "height": _PLAYWRIGHT_INITIAL_HEIGHT,
+                        },
+                    )
+                    page = await context.new_page()
+                    page.set_default_timeout(_PLAYWRIGHT_TIMEOUT_MS)
+                    await page.set_content(_html_doc(body_html), wait_until="load", timeout=_PLAYWRIGHT_TIMEOUT_MS)
+                    await _render_extras(page)
+                    await page.evaluate("document.fonts.ready")
+                    return await page.locator("body").screenshot(type="png", timeout=_PLAYWRIGHT_TIMEOUT_MS)
+                finally:
+                    await browser.close()
     except Exception:
         logger.exception("[CCUID] markdown 渲染失败")
         return None

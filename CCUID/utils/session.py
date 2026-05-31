@@ -2,6 +2,7 @@ import re
 import time
 import shutil
 import asyncio
+import contextlib
 from typing import Any
 from pathlib import Path
 from dataclasses import field, dataclass
@@ -13,7 +14,7 @@ from gsuid_core.logger import logger
 
 from .mode import GroupMode
 from .engines import get_engine
-from .database import CCUIDGrantGroup, CCUIDSessionNative
+from .database import CCUIDGrantGroup, CCUIDSessionModel, CCUIDSessionNative
 from .acp.backend import ACPBackend, BackendError
 from .prompt_queue import QueueEntry, PromptQueue
 from ..cc_config.cc_config import CCUIDConfig
@@ -68,8 +69,6 @@ class SessionMeta:
     last_active: float = field(default_factory=time.time)
     # 同 session 多条 prompt 串行排队，详见 prompt_queue.PromptQueue。
     queue: PromptQueue = field(default_factory=PromptQueue)
-    # `cc 下次允许` 一次性 flag：下条 prompt 权限全自动 allow_always；run_prompt 里 consume（置 False）传给 backend。
-    next_prompt_auto_approve: bool = False
 
     @property
     def idle_sec(self) -> int:
@@ -118,7 +117,6 @@ class DequeueIsRunning:
 @dataclass(slots=True, frozen=True)
 class DequeueForbidden:
     entry: QueueEntry
-    caller_uid: str
 
 
 DequeueResult = DequeueOk | DequeueNotFound | DequeueNoSession | DequeueIsRunning | DequeueForbidden
@@ -130,13 +128,32 @@ class SessionRegistry:
         self._backends: dict[str, ACPBackend] = {}
         self._closing: set[str] = set()
         self._lock = asyncio.Lock()
-        self._cleanup_task: asyncio.Task | None = None
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._pending: dict[str, list[PendingApproval]] = {}
 
     def backend(self, engine: str) -> ACPBackend:
         if engine not in self._backends:
-            self._backends[engine] = ACPBackend(get_engine(engine))
+            self._backends[engine] = ACPBackend(get_engine(engine), self)
         return self._backends[engine]
+
+    def _resolve_pending(self, sid: str) -> int:
+        pending = self._pending.pop(sid, [])
+        for item in pending:
+            if not item.future.done():
+                item.future.set_result(None)
+        return len(pending)
+
+    def _can_recycle(self, meta: SessionMeta) -> bool:
+        return not meta.queue.has_entries and not self.backend(meta.engine).is_session_busy(meta.sid)
+
+    def _select_lru_victim(self) -> SessionMeta | None:
+        candidates = [m for m in self._meta.values() if self._can_recycle(m)]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda x: x.last_active)
+
+    def _expired_recyclable_sessions(self, *, now: float, timeout: int) -> list[SessionMeta]:
+        return [m for m in self._meta.values() if self._can_recycle(m) and now - m.last_active > timeout]
 
     async def _shared(self, gid: str | None) -> bool:
         if gid is None:
@@ -155,9 +172,12 @@ class SessionRegistry:
                     meta = self._meta.get(sid)
                     if meta is None:
                         if len(self._meta) >= _MAX_CONCURRENT_SESSIONS:
-                            victim = min(self._meta.values(), key=lambda x: x.last_active)
-                            self._meta.pop(victim.sid, None)
-                            self._closing.add(victim.sid)
+                            victim = self._select_lru_victim()
+                            if victim is not None:
+                                self._meta.pop(victim.sid, None)
+                                self._closing.add(victim.sid)
+                            else:
+                                raise BackendError("活跃 session 已满，所有 session 都在执行中，稍后再试")
                         meta = SessionMeta(
                             sid=sid,
                             uid=uid,
@@ -175,6 +195,11 @@ class SessionRegistry:
                     await self._finish_close(victim, drop_native=False)
                 return result
             await asyncio.sleep(_CLOSING_POLL_SEC)
+
+    async def workdir_for(self, uid: str, gid: str | None, engine: str) -> str:
+        shared = await self._shared(gid)
+        sid = make_sid(uid, gid, engine, shared=shared)
+        return str(WORKDIR_ROOT / sid)
 
     async def run_prompt(
         self,
@@ -206,15 +231,10 @@ class SessionRegistry:
                         raise BackendError("session closed")
                     meta.queue.mark_running(entry.qid)
                     meta.last_active = time.time()
-                    # 一次性 yolo flag：consume 后立刻清零，避免影响下下个 prompt
-                    auto_approve = meta.next_prompt_auto_approve
-                    meta.next_prompt_auto_approve = False
 
                 resume = await CCUIDSessionNative.fetch(meta.sid)
                 try:
-                    async for ev in backend.prompt(
-                        meta.sid, meta.workdir, blocks, resume_id=resume, auto_approve=auto_approve
-                    ):
+                    async for ev in backend.prompt(meta.sid, meta.workdir, blocks, resume_id=resume):
                         yield ev
                 finally:
                     native = backend.get_native_session_id(meta.sid)
@@ -247,6 +267,7 @@ class SessionRegistry:
                     continue
                 if not (shared or m.uid == uid):
                     continue
+                self._resolve_pending(m.sid)
                 if not m.queue.has_entries:
                     continue
                 removed, running_cancelled = m.queue.cancel_all_except(current)
@@ -282,7 +303,7 @@ class SessionRegistry:
             if running is not None and running.qid == qid:
                 return DequeueIsRunning(entry=entry)
             if entry.uid != uid:
-                return DequeueForbidden(entry=entry, caller_uid=uid)
+                return DequeueForbidden(entry=entry)
             # 锁内 cancel + remove：杜绝"刚 cancel 就抢到 lock 开跑"的窗口；run_prompt 的 finally 再 remove 也无害（pop 幂等）。
             entry.task.cancel()
             meta.queue.remove(qid)
@@ -292,6 +313,7 @@ class SessionRegistry:
         sid = make_sid(uid, gid, engine, shared=await self._shared(gid))
         async with self._lock:
             target = self._meta.pop(sid, None)
+            self._resolve_pending(sid)
             if target:
                 self._closing.add(sid)
         if target:
@@ -302,19 +324,42 @@ class SessionRegistry:
     async def clear_workdir(self, uid: str, gid: str | None, engine: str) -> bool:
         """只擦 workdir 内容，不动 session。返回 workdir 是否存在。"""
         sid = make_sid(uid, gid, engine, shared=await self._shared(gid))
+        async with self._lock:
+            meta = self._meta.get(sid)
+            if meta is not None and (meta.queue.has_entries or self.backend(engine).is_session_busy(sid)):
+                raise BackendError("session 正在执行，先 stop 或 new 后再 clear")
         return await _clear_workdir_contents(str(WORKDIR_ROOT / sid))
+
+    async def bind_native_session(self, uid: str, gid: str | None, engine: str, native_id: str) -> None:
+        shared = await self._shared(gid)
+        sid = make_sid(uid, gid, engine, shared=shared)
+        async with self._lock:
+            meta = self._meta.get(sid)
+            if meta is not None and (meta.queue.has_entries or self.backend(engine).is_session_busy(sid)):
+                raise BackendError("session 正在执行，先 stop 或 new 后再 resume")
+            if meta is not None:
+                self._meta.pop(sid, None)
+                self._resolve_pending(sid)
+                self._closing.add(sid)
+        if meta is not None:
+            await self._finish_close(meta, drop_native=False)
+        await CCUIDSessionNative.store(sid, native_id)
+        await CCUIDSessionModel.drop(sid)
 
     async def _finish_close(self, meta: SessionMeta, *, drop_native: bool) -> None:
         try:
-            try:
-                await self.backend(meta.engine).close(meta.sid)
-            except Exception:
-                logger.exception(f"[CCUID] close failed: {meta.sid}")
+            await self._close_backend_session(meta)
             if drop_native:
                 await CCUIDSessionNative.drop(meta.sid)
         finally:
             async with self._lock:
                 self._closing.discard(meta.sid)
+
+    async def _close_backend_session(self, meta: SessionMeta) -> None:
+        try:
+            await self.backend(meta.engine).close(meta.sid)
+        except Exception:
+            logger.exception(f"[CCUID] close failed: {meta.sid}")
 
     def list_sessions(self) -> list[SessionMeta]:
         return list(self._meta.values())
@@ -383,12 +428,19 @@ class SessionRegistry:
         self._cleanup_task = asyncio.get_running_loop().create_task(self._loop(), name="CCUID-cleanup")
 
     async def shutdown(self) -> None:
-        if self._cleanup_task and not self._cleanup_task.done():
-            self._cleanup_task.cancel()
+        cleanup_task = self._cleanup_task
+        self._cleanup_task = None
+        if cleanup_task is not None:
+            if not cleanup_task.done():
+                cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await cleanup_task
         async with self._lock:
             targets = list(self._meta.values())
             self._meta.clear()
             self._closing.update(m.sid for m in targets)
+            for meta in targets:
+                self._resolve_pending(meta.sid)
         # shutdown 不丢 native_id：交给下次启动 sweep 按 idle 时间决定，快速重启不丢活跃 session。
         for meta in targets:
             await self._finish_close(meta, drop_native=False)
@@ -402,11 +454,9 @@ class SessionRegistry:
                 timeout = int(CCUIDConfig.get_config("IdleTimeoutSec").data)
                 now = time.time()
                 async with self._lock:
-                    targets = [
-                        self._meta.pop(sid)
-                        for sid, m in list(self._meta.items())
-                        if not m.queue.has_entries and now - m.last_active > timeout
-                    ]
+                    targets = self._expired_recyclable_sessions(now=now, timeout=timeout)
+                    for m in targets:
+                        self._meta.pop(m.sid, None)
                     self._closing.update(m.sid for m in targets)
                 # Idle expiry drops native_id；workdir 留给用户自己 `clear` 清，不自动删。
                 for meta in targets:

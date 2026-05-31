@@ -1,4 +1,6 @@
 import re
+import base64
+import binascii
 from typing import Any, Literal
 from pathlib import Path
 from dataclasses import field, dataclass
@@ -17,6 +19,7 @@ from acp.schema import (
     CurrentModeUpdate,
     ImageContentBlock,
     SessionInfoUpdate,
+    ConfigOptionUpdate,
     AvailableCommandsUpdate,
 )
 
@@ -25,11 +28,12 @@ from gsuid_core.logger import logger
 from gsuid_core.segment import MessageSegment
 from gsuid_core.message_models import Button
 
+from .errors import user_error
 from .render import (
     ChatBlock,
     ImageContext,
     render_to_png,
-    build_markdown,
+    build_html_body,
     engine_icon_url,
     clean_permission_summary,
 )
@@ -47,6 +51,7 @@ _IMAGE_MAX_WIDTH = 720
 _KNOWN_UNUSED_EVENTS: tuple[type, ...] = (
     SessionInfoUpdate,
     AvailableCommandsUpdate,
+    ConfigOptionUpdate,
     ToolCallProgress,
     UserMessageChunk,
 )
@@ -266,7 +271,7 @@ def _block_render_size(block: ChatBlock) -> int:
     title = block.meta["title"]
     if title is not None:
         size += len(title)
-    summary = block.meta["content_summary"]
+    summary = clean_permission_summary(block.meta["content_summary"])
     if summary is not None:
         size += len(summary)
     for loc in block.meta["locations"]:
@@ -292,7 +297,7 @@ def _should_image_with_format(blocks: list[ChatBlock], fmt: str) -> bool:
 
 async def _render_blocks_to_png(blocks: list[ChatBlock], ctx: RenderContext) -> bytes | None:
     display = get_engine(ctx.engine).display
-    md = build_markdown(
+    body_html = build_html_body(
         blocks,
         ImageContext(
             engine_display=display,
@@ -302,7 +307,7 @@ async def _render_blocks_to_png(blocks: list[ChatBlock], ctx: RenderContext) -> 
         ),
     )
     scale = int(CCUIDConfig.get_config("RenderScale").data)
-    return await render_to_png(md, max_width=_IMAGE_MAX_WIDTH, scale=scale)
+    return await render_to_png(body_html, max_width=_IMAGE_MAX_WIDTH, scale=scale)
 
 
 async def _send_as_images(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext) -> bool:
@@ -363,11 +368,17 @@ async def _send_blocks(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext) ->
 # 抓 agent 文本 / tool output 里的本地路径发给用户。起点：~ / Unix 绝对 / Windows 盘符；
 # 扩展名 1-8 字符免裸 `.` 误中；`\b` 挡 https:// 伪命中（`https:` 的 s 在词中不算 boundary）。
 _FILE_PATH_RE = re.compile(
-    r"(?:\b[A-Za-z]:[\\/]|~|/)[\w./\\-]+\.\w{1,8}",
+    r"(?:\b[A-Za-z]:[\\/]|~|(?<![:/\w])/)[\w./\\-]+\.\w{1,8}",
 )
 _IMAGE_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp", "bmp"})
 _MAX_IMAGE_BYTES = 30 * 1024 * 1024  # QQ image segment 上限
 _MAX_FILE_BYTES = 100 * 1024 * 1024  # OneBot file segment 保守上限
+_MAX_REFERENCED_ATTACHMENTS = 8
+_MAX_AGENT_IMAGE_BYTES = _MAX_IMAGE_BYTES
+_MAX_AGENT_IMAGE_BASE64_CHARS = ((_MAX_AGENT_IMAGE_BYTES + 2) // 3) * 4 + 4
+_SUPPORTED_AGENT_IMAGE_MIME_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/bmp"}
+)
 
 
 def _collect_attachment_paths(blocks: list[ChatBlock], sandbox: Path | None) -> list[Path]:
@@ -378,17 +389,26 @@ def _collect_attachment_paths(blocks: list[ChatBlock], sandbox: Path | None) -> 
         if not block.body:
             continue
         for raw in _FILE_PATH_RE.findall(block.body):
-            p = Path(raw).expanduser().resolve()
+            if len(out) >= _MAX_REFERENCED_ATTACHMENTS:
+                return out
+            try:
+                p = Path(raw).expanduser().resolve()
+            except OSError:
+                continue
             if p in seen:
                 continue
             seen.add(p)
-            if not p.is_file():
-                continue
-            if sandbox is not None and not p.is_relative_to(sandbox):
+            try:
+                if not p.is_file():
+                    continue
+                if sandbox is not None and not p.is_relative_to(sandbox):
+                    continue
+                size = p.stat().st_size
+            except OSError:
                 continue
             ext = p.suffix.lstrip(".").lower()
             limit = _MAX_IMAGE_BYTES if ext in _IMAGE_EXTS else _MAX_FILE_BYTES
-            if p.stat().st_size > limit:
+            if size > limit:
                 continue
             out.append(p)
     return out
@@ -408,14 +428,41 @@ async def _send_referenced_attachments(bot: Bot, blocks: list[ChatBlock], ctx: R
             await bot.send(MessageSegment.file(path, path.name))
 
 
+def _agent_image_mime_supported(raw: object) -> bool:
+    if not isinstance(raw, str):
+        return False
+    mime_type = raw.split(";", 1)[0].strip().lower()
+    return mime_type in _SUPPORTED_AGENT_IMAGE_MIME_TYPES
+
+
+def _decode_agent_image(raw: object) -> bytes | None:
+    if not isinstance(raw, str):
+        return None
+    if len(raw) > _MAX_AGENT_IMAGE_BASE64_CHARS:
+        logger.warning("[CCUID] agent image skipped: base64 too large")
+        return None
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        logger.warning("[CCUID] agent image skipped: invalid base64")
+        return None
+    if len(data) > _MAX_AGENT_IMAGE_BYTES:
+        logger.warning("[CCUID] agent image skipped: image too large")
+        return None
+    return data
+
+
 async def _send_agent_images(bot: Bot, blocks: list[ChatBlock]) -> None:
     """agent 通过 ACP ImageContentBlock 内联返回的图，base64 解码后直发 bot。"""
-    import base64  # noqa: PLC0415
-
     for block in blocks:
         if block.kind != "agent_image":
             continue
-        data = base64.b64decode(block.meta["data"])
+        if not _agent_image_mime_supported(block.meta.get("mime_type")):
+            logger.warning("[CCUID] agent image skipped: unsupported mime type")
+            continue
+        data = _decode_agent_image(block.meta.get("data"))
+        if data is None:
+            continue
         await bot.send(MessageSegment.image(data))
 
 
@@ -512,7 +559,7 @@ async def render(
                 _append_or_replace_tool(pending, out)
     except BackendError as e:
         flush_streams()
-        pending.append(ChatBlock("error", str(e)))
+        pending.append(ChatBlock("error", user_error(e)))
     except Exception:
         logger.exception(f"[CCUID/{ctx.engine}] event stream crashed")
 

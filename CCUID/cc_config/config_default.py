@@ -10,7 +10,7 @@ CONFIG_DEFAULT: dict[str, GSC] = {
     "IdleTimeoutSec": GsIntConfig(
         "Session 空闲回收秒数",
         "超时后子进程关闭，下次命令通过 native_id 自动 resume",
-        1800,
+        3600,
         max_value=86400,
     ),
     "ShowThinking": GsBoolConfig("回发思考内容", "是否把 agent 的 thinking 回发给用户", False),
@@ -49,6 +49,12 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         "queue",
         options=["queue", "reject"],
     ),
+    "SessionLoadScope": GsStrConfig(
+        "加载 sessions 范围",
+        "workdir=只加载当前工作区；all=加载全部历史 session",
+        "workdir",
+        options=["workdir", "all"],
+    ),
     "OutputFormat": GsStrConfig(
         "输出格式",
         "text=纯文本/合并转发；image=agent 回复用 markdown 图渲染；auto=按长度自动切换",
@@ -64,7 +70,7 @@ CONFIG_DEFAULT: dict[str, GSC] = {
     "AttachmentSandbox": GsBoolConfig(
         "附件只发 workdir 内",
         "关=任何 agent 回答里的本地路径都直发；开=只发当前 session workdir 内的文件，挡 /etc/passwd / ~/.ssh 之类",
-        False,
+        True,
     ),
     "AgentProxyMode": GsBoolConfig(
         "Agent CLI 使用代理",

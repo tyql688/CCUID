@@ -17,6 +17,13 @@ def _group_key(gid: str | None) -> str:
     return gid if gid is not None else ""
 
 
+def _stored_group_mode(raw: str) -> GroupMode:
+    mode = parse_mode(raw)
+    if mode is None:
+        return GroupMode.SOLO
+    return mode
+
+
 class CCUIDGrantUser(SQLModel, table=True):
     __tablename__: ClassVar[str] = "ccuid_grant_user"  # pyright: ignore[reportIncompatibleVariableOverride]
     user_id: str = Field(primary_key=True, max_length=128)
@@ -81,7 +88,7 @@ class CCUIDGrantGroup(SQLModel, table=True):
         row = await session.get(cls, gid)
         if row is None:
             return GroupMode.SOLO
-        return parse_mode(row.mode) or GroupMode.SOLO
+        return _stored_group_mode(row.mode)
 
     @classmethod
     @with_session
@@ -92,7 +99,7 @@ class CCUIDGrantGroup(SQLModel, table=True):
     @with_session
     async def list_all(cls, session: AsyncSession) -> list[tuple[str, GroupMode]]:
         rows = (await session.execute(select(cls))).scalars().all()
-        return sorted((r.group_id, parse_mode(r.mode) or GroupMode.SOLO) for r in rows)
+        return sorted((r.group_id, _stored_group_mode(r.mode)) for r in rows)
 
 
 class CCUIDSessionNative(SQLModel, table=True):

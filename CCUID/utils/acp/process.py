@@ -69,6 +69,17 @@ def resolve_launcher(cmd: tuple[str, ...]) -> tuple[str, ...]:
     return (resolved, *cmd[1:])
 
 
+def _ensure_workdir(workdir: str) -> None:
+    path = Path(workdir)
+    if path.is_symlink():
+        raise RuntimeError(f"workdir 是符号链接，拒绝启动: {workdir}")
+    if path.exists():
+        if not path.is_dir():
+            raise RuntimeError(f"workdir 不是目录，拒绝启动: {workdir}")
+        return
+    path.mkdir(parents=True, exist_ok=True)
+
+
 def _agent_uses_proxy(engine_name: str) -> bool:
     from ...cc_config.cc_config import CCUIDConfig
 
@@ -177,7 +188,7 @@ async def spawn_process(
     *,
     log_prefix: str = "",
 ) -> SpawnedProcess:
-    Path(workdir).mkdir(parents=True, exist_ok=True)
+    _ensure_workdir(workdir)
     cmd = resolve_launcher(engine.cmd)
     prefix = f"{log_prefix} " if log_prefix else ""
     logger.debug(f"[CCUID/{engine.name}] {prefix}{' '.join(cmd)} cwd={workdir}")

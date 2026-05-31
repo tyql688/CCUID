@@ -46,8 +46,8 @@ async def _collect_image_bytes(urls: list[str]) -> list[bytes]:
         return []
     try:
         result = await change_ev_image_to_bytes(urls)
-    except Exception:
-        logger.exception("[CCUID] 下载图片失败")
+    except Exception as err:
+        logger.debug(f"[CCUID] 下载图片失败: {err!r}")
         return []
     if result is None:
         return []

@@ -554,7 +554,7 @@ class ACPBackend:
                 else:
                     start_task = self._starting.get(sid)
                     if start_task is None:
-                        now = time.time()
+                        now = time.monotonic()
                         if now < self._cooldown_until:
                             raise BackendError(
                                 f"ACP {self.engine.name} 启动熔断中，{int(self._cooldown_until - now)}s 后重试"
@@ -620,7 +620,7 @@ class ACPBackend:
         self._spawn_failures += 1
         if self._spawn_failures < _SPAWN_FAIL_THRESHOLD:
             return
-        self._cooldown_until = time.time() + _SPAWN_COOLDOWN_SEC
+        self._cooldown_until = time.monotonic() + _SPAWN_COOLDOWN_SEC
         logger.warning(
             f"[CCUID/{self.engine.name}] 连续 {self._spawn_failures} 次启动失败，熔断 {_SPAWN_COOLDOWN_SEC}s"
         )

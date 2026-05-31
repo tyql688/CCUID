@@ -28,10 +28,14 @@ _CLEANUP_INTERVAL_SEC = 300
 _MAX_CONCURRENT_SESSIONS = 16
 
 
+def _runtime_now() -> float:
+    return time.monotonic()
+
+
 async def _clear_workdir_contents(workdir: str) -> bool:
     """清空目录内容但保留目录本身：active 子进程 cwd 仍指这条 inode，rmtree 会让它变僵尸目录。返回目录是否存在。"""
     p = Path(workdir)
-    if not p.exists():
+    if not p.exists() or not p.is_dir() or p.is_symlink():
         return False
 
     def _wipe() -> None:
@@ -65,13 +69,13 @@ class SessionMeta:
     engine: str
     workdir: str
     shared: bool = False
-    last_active: float = field(default_factory=time.time)
+    last_active: float = field(default_factory=_runtime_now)
     # 同 session 多条 prompt 串行排队，详见 prompt_queue.PromptQueue。
     queue: PromptQueue = field(default_factory=PromptQueue)
 
     @property
     def idle_sec(self) -> int:
-        return int(time.time() - self.last_active)
+        return int(_runtime_now() - self.last_active)
 
     @property
     def busy(self) -> bool:
@@ -140,7 +144,10 @@ class SessionRegistry:
         return len(pending)
 
     def _can_recycle(self, meta: SessionMeta) -> bool:
-        return not meta.queue.has_entries and not self.backend(meta.engine).is_session_busy(meta.sid)
+        return not self._is_active(meta)
+
+    def _is_active(self, meta: SessionMeta) -> bool:
+        return meta.queue.has_entries or self.backend(meta.engine).is_session_busy(meta.sid)
 
     def _select_lru_victim(self) -> SessionMeta | None:
         candidates = [m for m in self._meta.values() if self._can_recycle(m)]
@@ -183,7 +190,7 @@ class SessionRegistry:
                             shared=shared,
                         )
                         self._meta[sid] = meta
-                    meta.last_active = time.time()
+                    meta.last_active = _runtime_now()
                     result = (meta, self.backend(engine))
             if result:
                 if victim:
@@ -227,7 +234,7 @@ class SessionRegistry:
                     if self._meta.get(meta.sid) is not meta:
                         raise BackendError("session closed")
                     meta.queue.mark_running(entry.qid)
-                    meta.last_active = time.time()
+                    meta.last_active = _runtime_now()
 
                 resume = await CCUIDSessionNative.fetch(meta.sid)
                 try:
@@ -239,7 +246,7 @@ class SessionRegistry:
                     async with self._lock:
                         if self._meta.get(meta.sid) is meta:
                             meta.queue.mark_done(entry.qid)
-                            meta.last_active = time.time()
+                            meta.last_active = _runtime_now()
                             alive = True
                     if alive and native:
                         await CCUIDSessionNative.store(meta.sid, native)
@@ -324,7 +331,7 @@ class SessionRegistry:
         sid = make_sid(uid, gid, engine, shared=await self._shared(gid))
         async with self._lock:
             meta = self._meta.get(sid)
-            if meta is not None and (meta.queue.has_entries or self.backend(engine).is_session_busy(sid)):
+            if meta is not None and self._is_active(meta):
                 raise BackendError("session 正在执行，先 stop 或 new 后再 clear")
         return await _clear_workdir_contents(str(WORKDIR_ROOT / sid))
 
@@ -333,7 +340,7 @@ class SessionRegistry:
         sid = make_sid(uid, gid, engine, shared=shared)
         async with self._lock:
             meta = self._meta.get(sid)
-            if meta is not None and (meta.queue.has_entries or self.backend(engine).is_session_busy(sid)):
+            if meta is not None and self._is_active(meta):
                 raise BackendError("session 正在执行，先 stop 或 new 后再 resume")
             if meta is not None:
                 self._meta.pop(sid, None)
@@ -447,7 +454,7 @@ class SessionRegistry:
             try:
                 await asyncio.sleep(_CLEANUP_INTERVAL_SEC)
                 timeout = int(CCUIDConfig.get_config("IdleTimeoutSec").data)
-                now = time.time()
+                now = _runtime_now()
                 async with self._lock:
                     targets = self._expired_recyclable_sessions(now=now, timeout=timeout)
                     for m in targets:

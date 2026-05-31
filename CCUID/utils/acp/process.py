@@ -17,7 +17,6 @@ from ..engines import EngineSpec
 STREAM_LIMIT_BYTES = 50 * 1024 * 1024
 TERMINATE_TIMEOUT_SEC = 3
 STDERR_TAIL_LINES = 50
-STDERR_LINE_MAX_CHARS = 2000
 CONNECTION_CLOSE_TIMEOUT_SEC = 5
 PROXY_URL_ENV_KEYS = (
     "HTTP_PROXY",
@@ -52,12 +51,6 @@ def format_tail(tail: deque[str]) -> str:
     if not tail:
         return ""
     return "\nstderr tail:\n" + "\n".join(tail)
-
-
-def cap_stderr_line(line: str) -> str:
-    if len(line) <= STDERR_LINE_MAX_CHARS:
-        return line
-    return line[: STDERR_LINE_MAX_CHARS - 1] + "…"
 
 
 def resolve_launcher(cmd: tuple[str, ...]) -> tuple[str, ...]:
@@ -176,7 +169,6 @@ async def pump_stderr(proc: asyncio.subprocess.Process, tail: deque[str], *, eng
         async for raw in proc.stderr:
             line = raw.decode("utf-8", errors="replace").rstrip()
             if line:
-                line = cap_stderr_line(line)
                 tail.append(line)
                 logger.debug(f"[CCUID/{engine_name}] {line}")
 

@@ -71,6 +71,7 @@ class _RenderBuffer:
     pending: list[ChatBlock] = field(default_factory=list)
     agent_chunks: list[str] = field(default_factory=list)
     thought_chunks: list[str] = field(default_factory=list)
+    tool_history: dict[str, ChatBlock] = field(default_factory=dict)
 
     def _flush_agent(self) -> None:
         text = "".join(self.agent_chunks).strip()
@@ -98,6 +99,7 @@ class _RenderBuffer:
 
     def append_block(self, block: ChatBlock) -> None:
         self.flush_streams()
+        block = _merge_with_tool_history(self.tool_history, block)
         _append_or_replace_tool(self.pending, block)
 
     def pop_pending(self) -> list[ChatBlock]:
@@ -147,6 +149,55 @@ def _permission_block(ev: PermissionEvent) -> ChatBlock:
 ToolDisplayMode = Literal["off", "brief", "full"]
 
 
+def _tool_meta_text(block: ChatBlock, key: str) -> str | None:
+    value = block.meta.get(key)
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    return None
+
+
+def _tool_title(value: str | None, kind: str) -> str | None:
+    if not isinstance(value, str):
+        return None
+    title = value.strip()
+    if not title or (kind == "other" and title.lower() == "other"):
+        return None
+    return title
+
+
+def _compose_tool_body(title: str | None, summary: str | None) -> str:
+    return "\n".join(part for part in (title, summary) if part)
+
+
+def _tool_call_id(block: ChatBlock) -> str | None:
+    value = block.meta.get("tool_call_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _merge_tool_block(previous: ChatBlock, block: ChatBlock) -> ChatBlock:
+    old_kind = previous.meta.get("kind")
+    new_kind = block.meta.get("kind")
+    kind = old_kind if new_kind == "other" and isinstance(old_kind, str) else new_kind
+    if not isinstance(kind, str):
+        kind = "other"
+    title = _tool_meta_text(block, "title") or _tool_meta_text(previous, "title")
+    summary = _tool_meta_text(block, "summary")
+    body = _compose_tool_body(title, summary) or block.body or previous.body
+    meta = {**previous.meta, **block.meta, "kind": kind, "title": title, "summary": summary}
+    return ChatBlock("tool", body, meta=meta)
+
+
+def _merge_with_tool_history(history: dict[str, ChatBlock], block: ChatBlock) -> ChatBlock:
+    tid = _tool_call_id(block) if block.kind == "tool" else None
+    if tid is None:
+        return block
+    previous = history.get(tid)
+    merged = _merge_tool_block(previous, block) if previous is not None else block
+    history[tid] = merged
+    return merged
+
+
 def _classify(
     ev: object,
     show_thinking: bool,
@@ -177,8 +228,16 @@ def _classify(
     if isinstance(ev, ToolCallStart) and show_tools:
         # 同一个 toolCallId 经常 emit 两次（先 generic title 再具体 title）
         kind = ev.kind if ev.kind is not None else "other"
-        title = ev.title if ev.title is not None else kind
-        return ChatBlock("tool", title, meta={"kind": kind, "tool_call_id": ev.tool_call_id})
+        title = _tool_title(ev.title, kind)
+        summary = summarize_content(ev.content)
+        body = _compose_tool_body(title, summary)
+        if not body and kind == "other":
+            return None
+        return ChatBlock(
+            "tool",
+            body or kind,
+            meta={"kind": kind, "tool_call_id": ev.tool_call_id, "title": title, "summary": summary},
+        )
     if isinstance(ev, ToolCallProgress) and show_tools:
         # failed 永远显示（不论 brief/full）；带 content 的 update 只在 full 显示
         if ev.status == "failed":
@@ -188,11 +247,11 @@ def _classify(
             summary = summarize_content(ev.content)
             if summary:
                 kind = ev.kind if ev.kind is not None else "other"
-                title = ev.title if ev.title is not None else kind
+                title = _tool_title(ev.title, kind)
                 return ChatBlock(
                     "tool",
-                    f"{title}\n{summary}",
-                    meta={"kind": kind, "tool_call_id": ev.tool_call_id},
+                    _compose_tool_body(title, summary),
+                    meta={"kind": kind, "tool_call_id": ev.tool_call_id, "title": title, "summary": summary},
                 )
     if isinstance(ev, AgentPlanUpdate) and show_tools:
         return ChatBlock("plan", _fmt_plan(ev))
@@ -218,12 +277,12 @@ def _classify(
 def _append_or_replace_tool(buf: list[ChatBlock], block: ChatBlock) -> None:
     """claude-code-acp 对同一个 toolCallId 发两次 tool_call（generic → specific
     title），不去重会让用户看到 `Write` + `Write /path/to/file.py` 两条挨着。"""
-    tid = block.meta.get("tool_call_id") if block.kind == "tool" else None
-    if tid:
+    tid = _tool_call_id(block) if block.kind == "tool" else None
+    if tid is not None:
         for i in range(len(buf) - 1, -1, -1):
             b = buf[i]
             if b.kind == "tool" and b.meta.get("tool_call_id") == tid:
-                buf[i] = block
+                buf[i] = _merge_tool_block(b, block)
                 return
     buf.append(block)
 
@@ -252,7 +311,8 @@ def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
         elif block.kind == "think":
             out.append(f"think: {block.body}")
         elif block.kind == "tool":
-            out.append(f"{block.meta['kind']}: {block.body}")
+            kind = block.meta["kind"]
+            out.append(block.body if kind == "other" else f"{kind}: {block.body}")
         elif block.kind == "tool_failed":
             out.append(f"tool failed: {block.body}")
         elif block.kind == "plan":

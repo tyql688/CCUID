@@ -125,7 +125,7 @@ class CommandMsg:
 
     @classmethod
     def not_found(cls, token: str) -> str:
-        label = " ".join(token.strip().split())[:120]
+        label = " ".join(token.strip().split())
         return f"找不到 slash command: {label}\n先用 {cc_prefix()}slash 查看当前 session 支持的命令"
 
 

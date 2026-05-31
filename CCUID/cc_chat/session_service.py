@@ -56,7 +56,7 @@ async def do_queue_list(bot: Bot, ev: Event, engine: str) -> None:
                 (
                     RecordField("用户", e.uid, code=True),
                     RecordField("等待", f"{e.waited_sec}s"),
-                    RecordField("内容", e.preview, max_chars=None),
+                    RecordField("内容", e.preview),
                 ),
             )
         )

@@ -11,8 +11,6 @@ from .render import ChatBlock, ImageContext, render_to_png, build_html_body, eng
 from ..cc_config.cc_config import CCUIDConfig
 
 _LIST_IMAGE_MAX_WIDTH = 720
-_CELL_MAX_CHARS = 240
-_RECORD_VALUE_MAX_CHARS = 420
 _MARKDOWN_SPECIAL_RE = re.compile(r"([\\`*_{}\[\]()#+\-.!])")
 _BACKTICK_RUN_RE = re.compile(r"`+")
 _AUTOLINK_SCHEME_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]{1,20})://")
@@ -23,7 +21,6 @@ class RecordField:
     label: str
     value: object | None
     code: bool = False
-    max_chars: int | None = _RECORD_VALUE_MAX_CHARS
 
 
 @dataclass(slots=True, frozen=True)
@@ -32,24 +29,22 @@ class RecordItem:
     fields: tuple[RecordField, ...]
 
 
-def _plain_text(value: object | None, *, max_chars: int | None = _RECORD_VALUE_MAX_CHARS) -> str:
+def _plain_text(value: object | None) -> str:
     text = "" if value is None else str(value)
     if text == "":
         return "-"
-    if max_chars is not None and len(text) > max_chars:
-        text = text[: max_chars - 1] + "…"
     text = escape(text, quote=False).replace("\n", " / ")
     return _AUTOLINK_SCHEME_RE.sub(r"\1:&#8203;//", text)
 
 
-def _md_text(value: object | None, *, max_chars: int | None = _RECORD_VALUE_MAX_CHARS) -> str:
-    text = _plain_text(value, max_chars=max_chars)
+def _md_text(value: object | None) -> str:
+    text = _plain_text(value)
     text = _MARKDOWN_SPECIAL_RE.sub(r"\\\1", text)
     return text.replace("|", "\\|")
 
 
-def _md_code(value: object | None, *, max_chars: int | None = _RECORD_VALUE_MAX_CHARS) -> str:
-    text = _plain_text(value, max_chars=max_chars)
+def _md_code(value: object | None) -> str:
+    text = _plain_text(value)
     if text == "-":
         return text
     longest = max((len(m.group(0)) for m in _BACKTICK_RUN_RE.finditer(text)), default=0)
@@ -60,7 +55,7 @@ def _md_code(value: object | None, *, max_chars: int | None = _RECORD_VALUE_MAX_
 
 
 def md_cell(value: object | None) -> str:
-    return _md_text(value, max_chars=_CELL_MAX_CHARS)
+    return _md_text(value)
 
 
 def markdown_table(headers: list[str], rows: list[list[object | None]]) -> str:
@@ -71,22 +66,15 @@ def markdown_table(headers: list[str], rows: list[list[object | None]]) -> str:
 
 
 def markdown_records(title: str, records: list[RecordItem], *, footer: str | None = None) -> str:
-    lines = [f"## {_md_text(title, max_chars=120)}", ""]
+    lines = [f"## {_md_text(title)}", ""]
     for record in records:
-        lines.append(f"### {_md_text(record.title, max_chars=180)}")
+        lines.append(f"### {_md_text(record.title)}")
         for field in record.fields:
-            value = (
-                _md_code(field.value, max_chars=field.max_chars)
-                if field.code
-                else _md_text(
-                    field.value,
-                    max_chars=field.max_chars,
-                )
-            )
-            lines.append(f"- **{_md_text(field.label, max_chars=48)}**：{value}")
+            value = _md_code(field.value) if field.code else _md_text(field.value)
+            lines.append(f"- **{_md_text(field.label)}**：{value}")
         lines.append("")
     if footer:
-        lines.append(_md_text(footer, max_chars=600))
+        lines.append(_md_text(footer))
     return "\n".join(lines).strip()
 
 

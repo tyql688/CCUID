@@ -22,6 +22,7 @@ from acp.schema import (
 
 from .policy import PermissionMode, decide_auto
 from .content import build_event
+from .tool_state import ToolCallState
 from ...cc_config.cc_config import CCUIDConfig
 
 
@@ -48,9 +49,10 @@ class ACPClient(Client):
         self._queue = queue
         self._sid = sid
         self._approvals = approvals
+        self._tool_state = ToolCallState()
 
     async def session_update(self, session_id: str, update: object, **_: object) -> None:
-        await self._queue.put(update)
+        await self._queue.put(self._tool_state.normalize(update))
 
     async def request_permission(
         self,
@@ -60,6 +62,7 @@ class ACPClient(Client):
         **_: object,
     ) -> RequestPermissionResponse:
         """按 PermissionMode 分流：`ask` 挂 future 等用户审批，自动模式直接选对应 kind 的 PermissionOption。"""
+        tool_call = self._tool_state.normalize_update(tool_call)
         policy: PermissionMode = CCUIDConfig.get_config("PermissionPolicy").data
         if policy == "ask":
             return await self._ask(session_id, options, tool_call)

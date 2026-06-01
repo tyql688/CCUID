@@ -495,6 +495,8 @@ class ACPBackend:
         try:
             resp = await s.conn.prompt(prompt=blocks, session_id=s.acp_sid)
             await s.queue.put(resp)
+        except asyncio.CancelledError:
+            raise
         except BaseException as e:  # noqa: BLE001
             await s.queue.put(e)
 

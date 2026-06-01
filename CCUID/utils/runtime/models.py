@@ -4,7 +4,8 @@ import time
 import asyncio
 from dataclasses import field, dataclass
 
-from ..acp.types import RequestPermissionRequest
+from acp.schema import RequestPermissionRequest
+
 from ..prompt_queue import QueueEntry, PromptQueue
 
 

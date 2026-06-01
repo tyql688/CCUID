@@ -2,28 +2,23 @@ from __future__ import annotations
 
 import re
 import base64
-import asyncio
 from html import escape
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 from pathlib import Path
 from datetime import datetime
 from functools import lru_cache
-from contextlib import suppress
 from dataclasses import field, dataclass
 
-from pygments import highlight as _pyg_highlight
+from pygments import highlight
 from markdown_it import MarkdownIt
 from pygments.util import ClassNotFound
 from pygments.lexer import Lexer
 from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
 from mdit_py_plugins.gfm import gfm_plugin
-from playwright.async_api import async_playwright
 from mdit_py_plugins.deflist import deflist_plugin
-from playwright._impl._errors import TargetClosedError
 from pygments.formatters.html import HtmlFormatter
 
-from gsuid_core.logger import logger
-
+from .playwright_render import render_html_to_pngs
 from .presentation.permission import permission_display, clean_permission_summary
 
 if TYPE_CHECKING:
@@ -57,12 +52,8 @@ def engine_icon_url(engine_name: str) -> str | None:
 
 _FONT_URL = re.compile(r"url\([\"']?(fonts/[^)\"']+)[\"']?\)")
 
-_PLAYWRIGHT_TIMEOUT_MS = 30_000
-_PLAYWRIGHT_INITIAL_HEIGHT = 100
 _SINGLE_IMAGE_HEIGHT_CSS_PX = 6000
 _IMAGE_SLICE_HEIGHT_CSS_PX = 6000
-_RENDER_RETRY_COUNT = 1
-_RENDER_SEMAPHORE = asyncio.Semaphore(1)
 # Cursor IDE 行号引用 info string: `<start>:<end>:<path>`
 _CURSOR_REF_RE = re.compile(r"^(\d+):(\d+):(.+)$")
 
@@ -106,7 +97,7 @@ def _highlight_fence(code: str, name: str, _attrs: str) -> str:
         return f'<pre class="mermaid">{escape(code, quote=False)}</pre>'
     caption, lexer = _resolve_caption_and_lexer(name)
     if lexer is not None:
-        body = f'<pre class="highlight"><code>{_pyg_highlight(code, lexer, _PYG_FORMATTER)}</code></pre>'
+        body = f'<pre class="highlight"><code>{highlight(code, lexer, _PYG_FORMATTER)}</code></pre>'
     else:
         body = f"<pre><code>{escape(code, quote=False)}</code></pre>"
     if caption is None:
@@ -371,76 +362,12 @@ async def _render_extras(page: Page) -> None:
     await page.evaluate("window.ccuidRenderExtras()")
 
 
-async def _page_height(page: Page) -> int:
-    height = await page.evaluate(
-        """() => Math.ceil(Math.max(
-            document.body.scrollHeight,
-            document.body.offsetHeight,
-            document.documentElement.clientHeight,
-            document.documentElement.scrollHeight,
-            document.documentElement.offsetHeight
-        ))"""
-    )
-    return max(1, int(cast(float, height)))
-
-
-async def _screenshot_page_slices(page: Page, *, max_width: int, total_height: int) -> list[bytes]:
-    pngs: list[bytes] = []
-    y = 0
-    while y < total_height:
-        height = min(_IMAGE_SLICE_HEIGHT_CSS_PX, total_height - y)
-        await page.set_viewport_size({"width": max_width, "height": height})
-        await page.evaluate("(top) => window.scrollTo(0, top)", y)
-        pngs.append(
-            await page.screenshot(
-                type="png",
-                timeout=_PLAYWRIGHT_TIMEOUT_MS,
-            )
-        )
-        y += height
-    return pngs
-
-
-async def _render_to_pngs_once(body_html: str, *, max_width: int, scale: int) -> list[bytes]:
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        try:
-            context = await browser.new_context(
-                color_scheme="light",
-                device_scale_factor=scale,
-                java_script_enabled=True,
-                locale="zh-CN",
-                viewport={
-                    "width": max_width,
-                    "height": _PLAYWRIGHT_INITIAL_HEIGHT,
-                },
-            )
-            page = await context.new_page()
-            page.set_default_timeout(_PLAYWRIGHT_TIMEOUT_MS)
-            await page.set_content(_html_doc(body_html), wait_until="load", timeout=_PLAYWRIGHT_TIMEOUT_MS)
-            await _render_extras(page)
-            await page.evaluate("document.fonts.ready")
-            height = await _page_height(page)
-            if height <= _SINGLE_IMAGE_HEIGHT_CSS_PX:
-                return [await page.locator("body").screenshot(type="png", timeout=_PLAYWRIGHT_TIMEOUT_MS)]
-            return await _screenshot_page_slices(page, max_width=max_width, total_height=height)
-        finally:
-            with suppress(Exception):
-                await browser.close()
-
-
 async def render_to_pngs(body_html: str, *, max_width: int = 720, scale: int = 2) -> list[bytes]:
-    for attempt in range(_RENDER_RETRY_COUNT + 1):
-        try:
-            async with _RENDER_SEMAPHORE:
-                return await _render_to_pngs_once(body_html, max_width=max_width, scale=scale)
-        except TargetClosedError:
-            if attempt < _RENDER_RETRY_COUNT:
-                logger.warning("[CCUID] markdown 截图目标关闭，正在重试")
-                continue
-            logger.exception("[CCUID] markdown 渲染失败")
-            return []
-        except Exception:
-            logger.exception("[CCUID] markdown 渲染失败")
-            return []
-    return []
+    return await render_html_to_pngs(
+        _html_doc(body_html),
+        max_width=max_width,
+        scale=scale,
+        single_image_height=_SINGLE_IMAGE_HEIGHT_CSS_PX,
+        slice_height=_IMAGE_SLICE_HEIGHT_CSS_PX,
+        render_extras=_render_extras,
+    )

@@ -6,8 +6,7 @@ select = ["E", "F", "I", "W", "UP", "B"]
 ignore = ["E501", "B008"]
 
 [lint.per-file-ignores]
-# 子包 __init__.py 用于把内部符号 re-export 出去；直接 import 即可，
-# 不再写 __all__ 或 redundant alias。
+# 命令包 __init__.py 通过导入触发注册；不写 __all__。
 "**/__init__.py" = ["F401"]
 
 [lint.isort]

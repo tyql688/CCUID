@@ -6,16 +6,16 @@ from gsuid_core.models import Event
 from .common import send_engine_list
 from ..utils.msgs import ChatMsg, QueueMsg
 from ..utils.errors import user_error
-from ..utils.runtime import (
-    REGISTRY,
+from ..utils.acp.backend import BackendError
+from ..utils.list_render import RecordItem, RecordField, markdown_records
+from ..utils.runtime.models import (
     DequeueOk,
     DequeueNotFound,
     DequeueForbidden,
     DequeueIsRunning,
     DequeueNoSession,
 )
-from ..utils.acp.backend import BackendError
-from ..utils.list_render import RecordItem, RecordField, markdown_records
+from ..utils.runtime.registry import REGISTRY
 
 
 async def do_new(bot: Bot, ev: Event, engine: str) -> None:
@@ -48,18 +48,17 @@ async def do_queue_list(bot: Bot, ev: Event, engine: str) -> None:
         return
     running = meta.queue.running()
     running_qid = running.qid if running is not None else None
-    records: list[RecordItem] = []
-    for e in entries:
-        records.append(
-            RecordItem(
-                f"#{e.qid} {'运行中' if e.qid == running_qid else '排队'}",
-                (
-                    RecordField("用户", e.uid, code=True),
-                    RecordField("等待", f"{e.waited_sec}s"),
-                    RecordField("内容", e.preview),
-                ),
-            )
+    records = [
+        RecordItem(
+            f"#{e.qid} {'运行中' if e.qid == running_qid else '排队'}",
+            (
+                RecordField("用户", e.uid, code=True),
+                RecordField("等待", f"{e.waited_sec}s"),
+                RecordField("内容", e.preview),
+            ),
         )
+        for e in entries
+    ]
     md = markdown_records(f"{engine} queue ({len(entries)} 条)", records, footer=QueueMsg.list_hint())
     await send_engine_list(bot, engine, md)
 

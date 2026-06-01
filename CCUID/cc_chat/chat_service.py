@@ -6,9 +6,10 @@ from gsuid_core.models import Event
 from ..utils.msgs import ChatMsg, QueueMsg
 from ..utils.errors import user_error
 from ..utils.output import render
-from ..utils.runtime import REGISTRY, PendingApproval
 from ..utils.acp.backend import BackendError
 from ..utils.attachments import build_prompt
+from ..utils.runtime.models import PendingApproval
+from ..utils.runtime.registry import REGISTRY
 from ..utils.presentation.delivery import RenderContext
 
 

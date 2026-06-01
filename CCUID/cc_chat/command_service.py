@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from acp.schema import AvailableCommand
+
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 
 from .common import send_engine_list
 from ..utils.msgs import CommandMsg
 from .chat_service import do_chat
-from ..utils.runtime import REGISTRY
-from ..utils.acp.types import AvailableCommand
 from ..utils.list_render import RecordItem, RecordField, markdown_records
+from ..utils.runtime.registry import REGISTRY
 
 _SLASH_COMMAND_NAME_MAX = 80
 _SLASH_COMMAND_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_. -")

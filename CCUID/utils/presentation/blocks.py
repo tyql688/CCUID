@@ -249,9 +249,7 @@ def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
             out.append(block.body)
         elif block.kind == "mode":
             out.append(f"mode: {block.body}")
-        elif block.kind == "error":
-            out.append(block.body)
-        elif block.kind == "usage_footer":
+        elif block.kind in {"error", "usage_footer"}:
             out.append(block.body)
         elif block.kind == "permission":
             decision = block.meta["decision"]

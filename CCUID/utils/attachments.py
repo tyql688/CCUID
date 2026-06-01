@@ -79,7 +79,6 @@ def _filter_image_bytes(images: list[bytes]) -> tuple[list[bytes], list[str]]:
 
 
 async def build_prompt(ev: Event, text: str) -> PromptBuildResult:
-    blocks: list[PromptBlock] = []
     warnings: list[str] = []
     urls = _image_urls(ev)
     if urls:
@@ -88,8 +87,7 @@ async def build_prompt(ev: Event, text: str) -> PromptBuildResult:
     logger.debug(f"[CCUID] build_prompt images={len(urls)} reply={ev.reply!r} at={ev.at!r}")
     images, image_warnings = _filter_image_bytes(await _collect_image_bytes(urls))
     warnings.extend(image_warnings)
-    for raw in images:
-        blocks.append(image_block(raw, _mime(raw)))
+    blocks: list[PromptBlock] = [image_block(raw, _mime(raw)) for raw in images]
     if text:
         blocks.append(text_block(text))
     return PromptBuildResult(blocks=blocks, warnings=tuple(warnings))

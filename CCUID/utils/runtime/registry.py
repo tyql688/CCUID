@@ -5,6 +5,8 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 
+from acp.schema import RequestPermissionRequest
+
 from gsuid_core.logger import logger
 
 from ..mode import GroupMode
@@ -23,7 +25,6 @@ from .workdir import clear_workdir_contents
 from ..engines import get_engine
 from .identity import make_sid
 from ..database import CCUIDGrantGroup, CCUIDSessionModel, CCUIDSessionNative
-from ..acp.types import RequestPermissionRequest
 from ..acp.prompt import PromptBlock
 from ..acp.backend import ACPBackend, BackendError
 from ...cc_config.cc_config import CCUIDConfig
@@ -75,6 +76,9 @@ class SessionRegistry:
             return False
         return (await CCUIDGrantGroup.get_mode(gid)) is GroupMode.SHARED
 
+    async def _sid(self, uid: str, gid: str | None, engine: str) -> str:
+        return make_sid(uid, gid, engine, shared=await self._shared(gid))
+
     async def get_or_create(self, uid: str, gid: str | None, engine: str) -> tuple[SessionMeta, ACPBackend]:
         get_engine(engine)
         shared = await self._shared(gid)
@@ -112,9 +116,7 @@ class SessionRegistry:
             await asyncio.sleep(_CLOSING_POLL_SEC)
 
     async def workdir_for(self, uid: str, gid: str | None, engine: str) -> str:
-        shared = await self._shared(gid)
-        sid = make_sid(uid, gid, engine, shared=shared)
-        return str(WORKDIR_ROOT / sid)
+        return str(WORKDIR_ROOT / await self._sid(uid, gid, engine))
 
     async def run_prompt(
         self,
@@ -199,7 +201,7 @@ class SessionRegistry:
         qid: int,
     ) -> DequeueResult:
         """删队列里的一条 prompt（不会动正在跑的那条）。"""
-        sid = make_sid(uid, gid, engine, shared=await self._shared(gid))
+        sid = await self._sid(uid, gid, engine)
         async with self._lock:
             meta = self._meta.get(sid)
             if meta is None:
@@ -217,7 +219,7 @@ class SessionRegistry:
             return DequeueOk(entry=entry)
 
     async def restart(self, uid: str, gid: str | None, engine: str) -> None:
-        sid = make_sid(uid, gid, engine, shared=await self._shared(gid))
+        sid = await self._sid(uid, gid, engine)
         async with self._lock:
             target = self._meta.pop(sid, None)
             self._resolve_pending(sid)
@@ -230,7 +232,7 @@ class SessionRegistry:
 
     async def clear_workdir(self, uid: str, gid: str | None, engine: str) -> bool:
         """只擦 workdir 内容，不动 session。返回 workdir 是否存在。"""
-        sid = make_sid(uid, gid, engine, shared=await self._shared(gid))
+        sid = await self._sid(uid, gid, engine)
         async with self._lock:
             meta = self._meta.get(sid)
             if meta is not None and self._is_active(meta):
@@ -238,8 +240,7 @@ class SessionRegistry:
         return await clear_workdir_contents(str(WORKDIR_ROOT / sid))
 
     async def bind_native_session(self, uid: str, gid: str | None, engine: str, native_id: str) -> None:
-        shared = await self._shared(gid)
-        sid = make_sid(uid, gid, engine, shared=shared)
+        sid = await self._sid(uid, gid, engine)
         async with self._lock:
             meta = self._meta.get(sid)
             if meta is not None and self._is_active(meta):
@@ -300,8 +301,7 @@ class SessionRegistry:
 
     async def take_pending(self, uid: str, gid: str | None, engine: str) -> PendingApproval | None:
         """Return + remove the oldest pending approval for (uid, gid, engine)."""
-        shared = await self._shared(gid)
-        sid = make_sid(uid, gid, engine, shared=shared)
+        sid = await self._sid(uid, gid, engine)
         plist = self._pending.get(sid)
         if not plist:
             return None

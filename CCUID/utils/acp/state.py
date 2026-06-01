@@ -46,13 +46,21 @@ def _find_config_option(
     return None
 
 
+def _find_config_select(
+    options: tuple[SessionConfigOptionSelect | SessionConfigOptionBoolean, ...],
+    key: str,
+) -> SessionConfigOptionSelect | None:
+    option = _find_config_option(options, category=key)
+    if option is None:
+        option = _find_config_option(options, option_id=key)
+    return option if isinstance(option, SessionConfigOptionSelect) else None
+
+
 def _extract_model_config(
     options: tuple[SessionConfigOptionSelect | SessionConfigOptionBoolean, ...],
 ) -> tuple[str | None, str | None, tuple[ModelInfo, ...], str | None]:
-    option = _find_config_option(options, category="model")
+    option = _find_config_select(options, "model")
     if option is None:
-        option = _find_config_option(options, option_id="model")
-    if not isinstance(option, SessionConfigOptionSelect):
         return None, None, (), None
     available = tuple(ModelInfo(model_id=value, name=name) for value, name in _select_values(option))
     cur_name = next((model.name for model in available if model.model_id == option.current_value), None)
@@ -71,10 +79,8 @@ def _extract_modes(
 def _extract_mode_config(
     options: tuple[SessionConfigOptionSelect | SessionConfigOptionBoolean, ...],
 ) -> tuple[str | None, tuple[SessionMode, ...], str | None]:
-    option = _find_config_option(options, category="mode")
+    option = _find_config_select(options, "mode")
     if option is None:
-        option = _find_config_option(options, option_id="mode")
-    if not isinstance(option, SessionConfigOptionSelect):
         return None, (), None
     available = tuple(SessionMode(id=value, name=name) for value, name in _select_values(option))
     return option.current_value, available, option.id

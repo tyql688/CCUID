@@ -3,8 +3,8 @@ import asyncio
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start, on_core_shutdown
 
-from ..utils.runtime import REGISTRY
 from ..utils.acp.orphans import reap_orphans
+from ..utils.runtime.registry import REGISTRY
 
 
 @on_core_start

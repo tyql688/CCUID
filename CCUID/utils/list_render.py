@@ -54,14 +54,10 @@ def _md_code(value: object | None) -> str:
     return f"{fence}{text}{fence}"
 
 
-def md_cell(value: object | None) -> str:
-    return _md_text(value)
-
-
 def markdown_table(headers: list[str], rows: list[list[object | None]]) -> str:
-    head = "| " + " | ".join(md_cell(h) for h in headers) + " |"
+    head = "| " + " | ".join(_md_text(h) for h in headers) + " |"
     sep = "| " + " | ".join("---" for _ in headers) + " |"
-    body = ["| " + " | ".join(md_cell(v) for v in row) + " |" for row in rows]
+    body = ["| " + " | ".join(_md_text(v) for v in row) + " |" for row in rows]
     return "\n".join([head, sep, *body])
 
 

@@ -4,6 +4,8 @@ import shutil
 from typing import TypeVar
 from collections.abc import Callable
 
+from acp.schema import ModelInfo, SessionMode
+
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 
@@ -11,9 +13,7 @@ from .common import current_engine, send_engine_list
 from ..utils.msgs import ChatMsg, ModeMsg, ModelMsg
 from ..utils.errors import user_error
 from ..utils.engines import EngineSpec, resolve, list_engines
-from ..utils.runtime import REGISTRY, make_sid
 from ..utils.database import CCUIDUserEngine, CCUIDSessionModel, CCUIDSessionNative
-from ..utils.acp.types import ModelInfo, SessionMode
 from ..utils.acp.backend import BackendError
 from ..utils.list_render import (
     RecordItem,
@@ -22,6 +22,8 @@ from ..utils.list_render import (
     markdown_records,
     send_markdown_image_or_text,
 )
+from ..utils.runtime.identity import make_sid
+from ..utils.runtime.registry import REGISTRY
 
 _T = TypeVar("_T")
 

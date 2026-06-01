@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from gsuid_core.bot import Bot
 from gsuid_core.segment import MessageSegment
 
-from .render import ChatBlock, ImageContext, render_to_png, build_html_body, engine_icon_url
+from .render import ChatBlock, ImageContext, render_to_pngs, build_html_body, engine_icon_url
 from ..cc_config.cc_config import CCUIDConfig
 
 _LIST_IMAGE_MAX_WIDTH = 720
@@ -91,10 +91,11 @@ async def send_markdown_image(
         ImageContext(engine_display=display, icon_url=icon_url, render_style="list"),
     )
     scale = int(CCUIDConfig.get_config("RenderScale").data)
-    img = await render_to_png(body_html, max_width=_LIST_IMAGE_MAX_WIDTH, scale=scale)
-    if img is None:
+    imgs = await render_to_pngs(body_html, max_width=_LIST_IMAGE_MAX_WIDTH, scale=scale)
+    if not imgs:
         return False
-    await bot.send(MessageSegment.image(img))
+    for img in imgs:
+        await bot.send(MessageSegment.image(img))
     return True
 
 

@@ -17,7 +17,7 @@ from .blocks import _block_render_size, blocks_to_text_parts
 from ..render import (
     ChatBlock,
     ImageContext,
-    render_to_png,
+    render_to_pngs,
     build_html_body,
     engine_icon_url,
 )
@@ -71,7 +71,7 @@ def _should_image_with_format(blocks: list[ChatBlock], fmt: str) -> bool:
     raise ValueError(f"unhandled OutputFormat: {fmt!r}")
 
 
-async def _render_blocks_to_png(blocks: list[ChatBlock], ctx: RenderContext) -> bytes | None:
+async def _render_blocks_to_pngs(blocks: list[ChatBlock], ctx: RenderContext) -> list[bytes]:
     display = get_engine(ctx.engine).display
     body_html = build_html_body(
         blocks,
@@ -83,16 +83,17 @@ async def _render_blocks_to_png(blocks: list[ChatBlock], ctx: RenderContext) -> 
         ),
     )
     scale = int(CCUIDConfig.get_config("RenderScale").data)
-    return await render_to_png(body_html, max_width=_IMAGE_MAX_WIDTH, scale=scale)
+    return await render_to_pngs(body_html, max_width=_IMAGE_MAX_WIDTH, scale=scale)
 
 
 async def _send_as_images(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext) -> bool:
     if not blocks:
         return False
-    img = await _render_blocks_to_png(blocks, ctx)
-    if img is None:
+    imgs = await _render_blocks_to_pngs(blocks, ctx)
+    if not imgs:
         return False
-    await bot.send(MessageSegment.image(img))
+    for img in imgs:
+        await bot.send(MessageSegment.image(img))
     return True
 
 

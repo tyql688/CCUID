@@ -110,7 +110,7 @@ class SessionRegistry:
                     result = (meta, self.backend(engine))
             if result:
                 if victim:
-                    # LRU 淘汰：关子进程但留 native_id，被淘汰的用户下条 prompt 仍能 resume。
+                    # LRU 淘汰：关子进程但保留 native_id；用户在空闲超时前可 resume，超时后 native_id 被清除（见 _loop/drop_native=True）。
                     await self._finish_close(victim, drop_native=False)
                 return result
             await asyncio.sleep(_CLOSING_POLL_SEC)
@@ -346,6 +346,8 @@ class SessionRegistry:
             try:
                 await asyncio.sleep(_CLEANUP_INTERVAL_SEC)
                 timeout = int(CCUIDConfig.get_config("IdleTimeoutSec").data)
+                # IdleKeepContext: 开=只关进程留 native_id 下次 resume；关=连上下文一起清。
+                keep_context = bool(CCUIDConfig.get_config("IdleKeepContext").data)
                 now = _runtime_now()
                 async with self._lock:
                     targets = self._expired_recyclable_sessions(now=now, timeout=timeout)
@@ -353,7 +355,7 @@ class SessionRegistry:
                         self._meta.pop(m.sid, None)
                     self._closing.update(m.sid for m in targets)
                 for meta in targets:
-                    await self._finish_close(meta, drop_native=True)
+                    await self._finish_close(meta, drop_native=not keep_context)
                 await self._reap_expired()
             except asyncio.CancelledError:
                 return
@@ -361,8 +363,11 @@ class SessionRegistry:
                 logger.exception("[CCUID] cleanup failed")
 
     async def _reap_expired(self) -> None:
-        """超时 native_id 从 DB drop 掉，agent 下次拿不到旧 session_id resume。"""
+        """IdleKeepContext 关时：超时 native_id 从 DB drop 掉，agent 下次拿不到旧 session_id resume。
+        开时：保留上下文，不软过期（直接返回）。"""
         if not WORKDIR_ROOT.exists():
+            return
+        if bool(CCUIDConfig.get_config("IdleKeepContext").data):
             return
         soft_sec = int(CCUIDConfig.get_config("IdleTimeoutSec").data)
         if soft_sec <= 0:

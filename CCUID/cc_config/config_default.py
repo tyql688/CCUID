@@ -9,9 +9,14 @@ from gsuid_core.utils.plugins_config.models import (
 CONFIG_DEFAULT: dict[str, GSC] = {
     "IdleTimeoutSec": GsIntConfig(
         "Session 空闲回收秒数",
-        "超时后子进程关闭，下次命令通过 native_id 自动 resume",
-        3600,
+        "空闲超过此秒数关闭子进程回收内存；是否保留对话由 IdleKeepContext 决定",
+        1800,
         max_value=86400,
+    ),
+    "IdleKeepContext": GsBoolConfig(
+        "空闲回收保留对话",
+        "关(默认)=空闲回收同时清除上下文，下次从头；开=只关子进程、保留 native_id，下次消息自动 resume（冷启动慢几秒）",
+        False,
     ),
     "ShowThinking": GsBoolConfig("回发思考内容", "是否把 agent 的 thinking 回发给用户", False),
     "ToolDisplay": GsStrConfig(
@@ -63,7 +68,7 @@ CONFIG_DEFAULT: dict[str, GSC] = {
     ),
     "RenderScale": GsIntConfig(
         "渲染像素密度",
-        "1=标清省流量；2=高清(默认, Retina/手机屏锐利)；3=超清(体积约 1×9，没必要)",
+        "1=标清省流量；2=高清(默认, Retina/手机屏锐利)；3=超清(体积约 9 倍，没必要)",
         2,
         max_value=3,
     ),

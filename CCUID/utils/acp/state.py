@@ -14,7 +14,7 @@ from acp.schema import (
 def _extract_models(
     state: SessionModelState | None,
 ) -> tuple[str | None, str | None, tuple[ModelInfo, ...]]:
-    """label 直接用 selected.name，agent 给什么就显示什么。"""
+    """按 current_model_id 在 available_models 里查出显示名；查不到返回 None。"""
     if state is None:
         return None, None, ()
     available = tuple(state.available_models)

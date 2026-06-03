@@ -61,7 +61,6 @@ def build_event(
     options: list[PermissionOption],
     matched: bool,
 ) -> PermissionEvent:
-    """Pack a typed ACP request into PermissionEvent."""
     return PermissionEvent(
         decision=decision,
         session_id=session_id,

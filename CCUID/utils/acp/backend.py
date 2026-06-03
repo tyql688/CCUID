@@ -73,10 +73,7 @@ _T = TypeVar("_T")
 
 
 class BackendError(RuntimeError):
-    def __init__(self, message: str, raw: dict[str, object] | None = None) -> None:
-        super().__init__(message)
-        self.message = message
-        self.raw = raw
+    pass
 
 
 @dataclass(slots=True, frozen=True)
@@ -85,10 +82,6 @@ class PromptUsage:
 
     usage: Usage | None = None
     update: UsageUpdate | None = None
-
-    @property
-    def has_any_data(self) -> bool:
-        return self.usage is not None or self.update is not None
 
 
 @dataclass(slots=True)
@@ -295,8 +288,7 @@ class ACPBackend:
         usage = s.last_prompt_usage
         if update is None and usage is None:
             return None
-        snap = PromptUsage(usage=usage, update=update)
-        return snap if snap.has_any_data else None
+        return PromptUsage(usage=usage, update=update)
 
     async def _with_idle_session(
         self,

@@ -10,6 +10,7 @@ from acp.schema import (
     EmbeddedResourceContentBlock,
 )
 
+# 必须覆盖 acp SDK conn.prompt 的 ContentBlock 全集：list 不变型，窄化会让 list[PromptBlock] 不可赋值。
 PromptBlock = (
     TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
 )

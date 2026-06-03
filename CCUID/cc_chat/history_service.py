@@ -40,8 +40,7 @@ def _filter_current_workdir_sessions(
     sessions: tuple[SessionInfo, ...],
     workdir: str,
 ) -> tuple[SessionInfo, ...]:
-    with_cwd = [session for session in sessions if session.cwd]
-    if not with_cwd:
+    if not any(session.cwd for session in sessions):
         return sessions
     return tuple(session for session in sessions if same_path(session.cwd, workdir))
 

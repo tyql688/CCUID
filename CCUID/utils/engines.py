@@ -40,7 +40,7 @@ ENGINE_SPECS: tuple[EngineSpec, ...] = (
         "kimi",
         "Kimi Code CLI",
         ("kimi", "acp"),
-        install_url="https://moonshotai.github.io/kimi-cli/en/guides/getting-started.html",
+        install_url="https://moonshotai.github.io/kimi-code/",
     ),
     EngineSpec(
         "gemini",

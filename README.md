@@ -24,14 +24,14 @@
 
 ## 支持的 engines
 
-| Engine     | 启动命令                                 | 安装/登录                                                                             |
-| ---------- | ---------------------------------------- | ------------------------------------------------------------------------------------- |
-| `claude`   | `npx -y @zed-industries/claude-code-acp` | [claude-code-acp](https://github.com/zed-industries/claude-code-acp)                  |
-| `codex`    | `npx -y @zed-industries/codex-acp`       | [codex-acp](https://github.com/zed-industries/codex-acp)                              |
-| `cursor`   | `cursor-agent acp`                       | [cursor CLI](https://docs.cursor.com/cli/installation)                                |
-| `opencode` | `opencode acp`                           | [opencode](https://opencode.ai/docs/acp/)                                             |
-| `kimi`     | `kimi acp`                               | [Kimi Code CLI](https://moonshotai.github.io/kimi-cli/en/guides/getting-started.html) |
-| `gemini`   | `gemini --acp`                           | [Gemini CLI ACP mode](https://geminicli.com/docs/cli/acp-mode/)                       |
+| Engine     | 启动命令                                 | 安装/登录                                                                                                                                                       |
+| ---------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude`   | `npx -y @zed-industries/claude-code-acp` | [claude-code-acp](https://github.com/zed-industries/claude-code-acp)                                                                                            |
+| `codex`    | `npx -y @zed-industries/codex-acp`       | [codex-acp](https://github.com/zed-industries/codex-acp)                                                                                                        |
+| `cursor`   | `cursor-agent acp`                       | [cursor CLI](https://docs.cursor.com/cli/installation)                                                                                                          |
+| `opencode` | `opencode acp`                           | [opencode](https://opencode.ai/docs/acp/)                                                                                                                       |
+| `kimi`     | `kimi acp`                               | [Kimi Code CLI](https://moonshotai.github.io/kimi-code/) / [Kimi CLI](https://moonshotai.github.io/kimi-cli/en/guides/getting-started.html)（二选一，不能共存） |
+| `gemini`   | `gemini --acp`                           | [Gemini CLI ACP mode](https://geminicli.com/docs/cli/acp-mode/)                                                                                                 |
 
 ## 其他工具
 

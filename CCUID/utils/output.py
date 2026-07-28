@@ -58,8 +58,8 @@ async def render(
             if out is None:
                 continue
             if isinstance(out, tuple):
-                kind, text = out
-                buffer.append_fragment(kind, text)
+                kind, text, message_id = out
+                buffer.append_fragment(kind, text, message_id)
                 continue
             if out.kind == "permission":
                 if out.meta["decision"] != "ask" and not show_auto_perms:

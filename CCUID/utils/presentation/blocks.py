@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from typing import Literal
 from dataclasses import field, dataclass
+from urllib.parse import unquote, urlsplit
 
 from acp.schema import (
+    PlanEntry,
     UsageUpdate,
     ToolCallStart,
+    PlanUpdateFile,
     AgentPlanUpdate,
+    PlanUpdateItems,
     TextContentBlock,
     ToolCallProgress,
     UserMessageChunk,
@@ -16,6 +20,9 @@ from acp.schema import (
     ImageContentBlock,
     SessionInfoUpdate,
     ConfigOptionUpdate,
+    PlanUpdateMarkdown,
+    AgentPlanContentUpdate,
+    AgentPlanRemovedUpdate,
     AvailableCommandsUpdate,
 )
 
@@ -31,6 +38,9 @@ from ..acp.permission import PermissionEvent
 # UsageUpdate / AgentThoughtChunk 有显式 return None 分支，不进此表；
 # ToolCallProgress 有条件分支但会落穿，故仍需登记。
 _KNOWN_UNUSED_EVENTS: tuple[type, ...] = (
+    AgentPlanUpdate,
+    AgentPlanContentUpdate,
+    AgentPlanRemovedUpdate,
     SessionInfoUpdate,
     AvailableCommandsUpdate,
     ConfigOptionUpdate,
@@ -40,49 +50,60 @@ _KNOWN_UNUSED_EVENTS: tuple[type, ...] = (
 _warned_event_types: set[str] = set()
 
 StreamKind = Literal["agent", "think"]
-StreamFragment = tuple[StreamKind, str]
+StreamFragment = tuple[StreamKind, str, str | None]
 ToolDisplayMode = Literal["off", "brief", "full"]
 
 
 @dataclass(slots=True)
 class _RenderBuffer:
     pending: list[ChatBlock] = field(default_factory=list)
-    agent_chunks: list[str] = field(default_factory=list)
-    thought_chunks: list[str] = field(default_factory=list)
+    stream_chunks: list[str] = field(default_factory=list)
+    stream_kind: StreamKind | None = None
+    stream_message_id: str | None = None
     tool_history: dict[str, ChatBlock] = field(default_factory=dict)
-
-    def _flush_agent(self) -> None:
-        text = "".join(self.agent_chunks).strip()
-        if text:
-            self.pending.append(ChatBlock("agent_md", text))
-        self.agent_chunks.clear()
-
-    def _flush_thought(self) -> None:
-        text = "".join(self.thought_chunks).strip()
-        if text:
-            self.pending.append(ChatBlock("think", text))
-        self.thought_chunks.clear()
+    delivered_plan_ids: set[str] = field(default_factory=set)
 
     def flush_streams(self) -> None:
-        self._flush_thought()
-        self._flush_agent()
+        text = "".join(self.stream_chunks).strip()
+        if text:
+            block_kind = "agent_md" if self.stream_kind == "agent" else "think"
+            self.pending.append(ChatBlock(block_kind, text))
+        self.stream_chunks.clear()
+        self.stream_kind = None
+        self.stream_message_id = None
 
-    def append_fragment(self, kind: StreamKind, text: str) -> None:
-        if kind == "agent":
-            self._flush_thought()
-            self.agent_chunks.append(text)
-            return
-        self._flush_agent()
-        self.thought_chunks.append(text)
+    def append_fragment(self, kind: StreamKind, text: str, message_id: str | None) -> None:
+        if self.stream_chunks and (self.stream_kind != kind or self.stream_message_id != message_id):
+            self.flush_streams()
+        if not self.stream_chunks:
+            self.stream_kind = kind
+            self.stream_message_id = message_id
+        self.stream_chunks.append(text)
 
     def append_block(self, block: ChatBlock) -> None:
         self.flush_streams()
         block = _merge_with_tool_history(self.tool_history, block)
+        if block.kind == "plan":
+            _append_or_replace_plan(self.pending, block)
+            return
+        if block.kind == "plan_removed":
+            plan_id = block.meta["plan_id"]
+            removed_delivered = plan_id in self.delivered_plan_ids
+            _remove_plan(self.pending, plan_id)
+            self.delivered_plan_ids.discard(plan_id)
+            if removed_delivered:
+                self.pending.append(block)
+            return
         _append_or_replace_tool(self.pending, block)
 
     def pop_pending(self) -> list[ChatBlock]:
         self.flush_streams()
         blocks = self.pending
+        for block in blocks:
+            if block.kind == "plan":
+                plan_id = block.meta.get("plan_id")
+                if isinstance(plan_id, str):
+                    self.delivered_plan_ids.add(plan_id)
         self.pending = []
         return blocks
 
@@ -91,9 +112,29 @@ def _chunk_text(c: object) -> str:
     return c.text if isinstance(c, TextContentBlock) else ""
 
 
-def _fmt_plan(ev: AgentPlanUpdate) -> str:
-    rows = [f"- {e.status}: {e.content}" for e in ev.entries]
-    return "**Plan:**\n" + "\n".join(rows)
+def _fmt_plan_entries(entries: list[PlanEntry]) -> str:
+    rows = [f"- {entry.status} · {entry.priority}: {entry.content}" for entry in entries]
+    return "\n".join(rows)
+
+
+def _fmt_plan_content(ev: AgentPlanContentUpdate) -> ChatBlock:
+    plan = ev.plan
+    if isinstance(plan, PlanUpdateItems):
+        body = f"**Plan `{plan.id}`:**\n" + _fmt_plan_entries(plan.entries)
+    elif isinstance(plan, PlanUpdateMarkdown):
+        body = f"**Plan `{plan.id}`:**\n\n{plan.content}"
+    elif isinstance(plan, PlanUpdateFile):
+        parsed = urlsplit(plan.uri)
+        if parsed.scheme == "file":
+            location = unquote(parsed.path)
+        elif parsed.scheme:
+            location = f"<{plan.uri}>"
+        else:
+            location = f"`{plan.uri}`"
+        body = f"**Plan `{plan.id}` file:** {location}"
+    else:
+        raise TypeError(f"unsupported ACP plan update: {type(plan).__name__}")
+    return ChatBlock("plan", body, meta={"plan_id": plan.id})
 
 
 def _permission_block(ev: PermissionEvent) -> ChatBlock:
@@ -116,7 +157,7 @@ def _tool_meta_text(block: ChatBlock, key: str) -> str | None:
     value = block.meta.get(key)
     if isinstance(value, str):
         text = value.strip()
-        return text or None
+        return None if text == "" else text
     return None
 
 
@@ -144,9 +185,15 @@ def _merge_tool_block(previous: ChatBlock, block: ChatBlock) -> ChatBlock:
     kind = old_kind if new_kind == "other" and isinstance(old_kind, str) else new_kind
     if not isinstance(kind, str):
         kind = "other"
-    title = _tool_meta_text(block, "title") or _tool_meta_text(previous, "title")
+    title = _tool_meta_text(block, "title")
+    if title is None:
+        title = _tool_meta_text(previous, "title")
     summary = _tool_meta_text(block, "summary")
-    body = _compose_tool_body(title, summary) or block.body or previous.body
+    body = _compose_tool_body(title, summary)
+    if body == "":
+        body = block.body
+    if body == "":
+        body = previous.body
     meta = {**previous.meta, **block.meta, "kind": kind, "title": title, "summary": summary}
     return ChatBlock("tool", body, meta=meta)
 
@@ -172,10 +219,10 @@ def _classify(
         if isinstance(ev.content, ImageContentBlock):
             return ChatBlock("agent_image", "", meta={"data": ev.content.data, "mime_type": ev.content.mime_type})
         text = _chunk_text(ev.content)
-        return ("agent", text) if text else None
+        return ("agent", text, ev.message_id) if text else None
     if isinstance(ev, AgentThoughtChunk) and show_thinking:
         text = _chunk_text(ev.content)
-        return ("think", text) if text else None
+        return ("think", text, ev.message_id) if text else None
     if isinstance(ev, ToolCallStart) and show_tools:
         kind = ev.kind if ev.kind is not None else "other"
         title = _tool_title(ev.title, kind)
@@ -185,13 +232,13 @@ def _classify(
             return None
         return ChatBlock(
             "tool",
-            body or kind,
+            body if body != "" else kind,
             meta={"kind": kind, "tool_call_id": ev.tool_call_id, "title": title, "summary": summary},
         )
     if isinstance(ev, ToolCallProgress) and show_tools:
         if ev.status == "failed":
             err = ev.raw_output.get("error") if isinstance(ev.raw_output, dict) else None
-            return ChatBlock("tool_failed", str(err) if err else "failed")
+            return ChatBlock("tool_failed", str(err) if err is not None else "failed")
         if tool_display == "full" and ev.content:
             summary = summarize_tool_content(ev.content)
             if summary:
@@ -203,7 +250,15 @@ def _classify(
                     meta={"kind": kind, "tool_call_id": ev.tool_call_id, "title": title, "summary": summary},
                 )
     if isinstance(ev, AgentPlanUpdate) and show_tools:
-        return ChatBlock("plan", _fmt_plan(ev))
+        return ChatBlock("plan", "**Plan:**\n" + _fmt_plan_entries(ev.entries))
+    if isinstance(ev, AgentPlanContentUpdate) and show_tools:
+        return _fmt_plan_content(ev)
+    if isinstance(ev, AgentPlanRemovedUpdate) and show_tools:
+        return ChatBlock(
+            "plan_removed",
+            f"**Plan removed:** `{ev.id}`",
+            meta={"plan_id": ev.id},
+        )
     if isinstance(ev, CurrentModeUpdate) and show_tools:
         return ChatBlock("mode", ev.current_mode_id)
     if isinstance(ev, PermissionEvent):
@@ -232,6 +287,20 @@ def _append_or_replace_tool(buf: list[ChatBlock], block: ChatBlock) -> None:
     buf.append(block)
 
 
+def _append_or_replace_plan(buf: list[ChatBlock], block: ChatBlock) -> None:
+    plan_id = block.meta.get("plan_id")
+    for index in range(len(buf) - 1, -1, -1):
+        previous = buf[index]
+        if previous.kind == "plan" and previous.meta.get("plan_id") == plan_id:
+            buf[index] = block
+            return
+    buf.append(block)
+
+
+def _remove_plan(buf: list[ChatBlock], plan_id: str) -> None:
+    buf[:] = [block for block in buf if not (block.kind == "plan" and block.meta.get("plan_id") == plan_id)]
+
+
 def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
     """Flatten blocks into discrete text strings for the text/forward path."""
     out: list[str] = []
@@ -245,7 +314,7 @@ def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
             out.append(block.body if kind == "other" else f"{kind}: {block.body}")
         elif block.kind == "tool_failed":
             out.append(f"tool failed: {block.body}")
-        elif block.kind == "plan":
+        elif block.kind in {"plan", "plan_removed"}:
             out.append(block.body)
         elif block.kind == "mode":
             out.append(f"mode: {block.body}")

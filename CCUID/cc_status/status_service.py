@@ -44,9 +44,8 @@ async def run_status(bot: Bot, _ev: Event) -> None:
 async def run_doctor(bot: Bot, _ev: Event) -> None:
     rows: list[list[object | None]] = []
     for engine in list_engines():
-        command = engine.cmd
-        launcher = command[0] if command else "<empty>"
-        if command and shutil.which(launcher):
+        launcher = engine.cmd[0]
+        if shutil.which(launcher):
             rows.append([engine.name, engine.display, "ok", ""])
         else:
             rows.append([engine.name, engine.display, f"missing {launcher}", engine.install_url])

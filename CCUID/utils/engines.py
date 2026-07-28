@@ -9,20 +9,23 @@ class EngineSpec:
     display: str
     cmd: tuple[str, ...]
     install_url: str
+    initial_mode_override: tuple[str, str] | None = None
+    grok_metadata: bool = False
 
 
 ENGINE_SPECS: tuple[EngineSpec, ...] = (
     EngineSpec(
         "claude",
         "Claude Code",
-        ("npx", "-y", "@zed-industries/claude-code-acp"),
-        install_url="https://github.com/zed-industries/claude-code-acp",
+        ("npx", "-y", "@agentclientprotocol/claude-agent-acp@0.63.0"),
+        install_url="https://github.com/agentclientprotocol/claude-agent-acp",
+        initial_mode_override=("bypassPermissions", "default"),
     ),
     EngineSpec(
         "codex",
         "Codex",
-        ("npx", "-y", "@zed-industries/codex-acp"),
-        install_url="https://github.com/zed-industries/codex-acp",
+        ("npx", "-y", "@agentclientprotocol/codex-acp@1.1.7"),
+        install_url="https://github.com/agentclientprotocol/codex-acp",
     ),
     EngineSpec(
         "cursor",
@@ -48,10 +51,16 @@ ENGINE_SPECS: tuple[EngineSpec, ...] = (
         ("gemini", "--acp"),
         install_url="https://geminicli.com/docs/cli/acp-mode/",
     ),
+    EngineSpec(
+        "grok",
+        "Grok",
+        ("grok", "agent", "stdio"),
+        install_url="https://x.ai/cli",
+        grok_metadata=True,
+    ),
 )
 
 ENGINES: dict[str, EngineSpec] = {engine.name: engine for engine in ENGINE_SPECS}
-ENGINE_NAMES = frozenset(ENGINES)
 
 DEFAULT_ENGINE = ENGINE_SPECS[0].name
 
@@ -60,12 +69,12 @@ def get_engine(name: str) -> EngineSpec:
     return ENGINES[name]
 
 
-def list_engines() -> list[EngineSpec]:
-    return list(ENGINE_SPECS)
+def list_engines() -> tuple[EngineSpec, ...]:
+    return ENGINE_SPECS
 
 
 def has_engine(name: str | None) -> bool:
-    return name in ENGINE_NAMES
+    return name in ENGINES
 
 
 def resolve(token: str) -> EngineSpec | None:

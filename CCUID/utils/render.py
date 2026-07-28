@@ -128,6 +128,7 @@ BlockKind = Literal[
     "tool",
     "tool_failed",
     "plan",
+    "plan_removed",
     "mode",
     "error",
     "permission",
@@ -215,7 +216,7 @@ def _render_block(block: ChatBlock) -> str:
     if block.kind == "tool_failed":
         body = _render_labeled_markdown("failed", "failed", block.body)
         return f'<div class="cc-tool cc-tool-failed">{body}</div>'
-    if block.kind == "plan":
+    if block.kind in {"plan", "plan_removed"}:
         return _render_untrusted_markdown(block.body)
     if block.kind == "mode":
         return f'<div class="cc-aux">{_tag("mode")}{_text(block.body)}</div>'

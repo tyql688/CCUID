@@ -14,30 +14,39 @@ from acp import (
 )
 from acp.schema import (
     Usage,
-    ModelInfo,
     SessionInfo,
     SessionMode,
     UsageUpdate,
     Implementation,
     PromptResponse,
     AvailableCommand,
+    PlanCapabilities,
     AgentCapabilities,
     CurrentModeUpdate,
     ImageContentBlock,
     SessionInfoUpdate,
     ClientCapabilities,
     ConfigOptionUpdate,
+    InitializeResponse,
     NewSessionResponse,
     LoadSessionResponse,
     ResumeSessionResponse,
     AvailableCommandsUpdate,
+    ClientSessionCapabilities,
     SessionConfigOptionSelect,
-    SessionConfigOptionBoolean,
-    SetSessionConfigOptionResponse,
+    SessionConfigSelectOption,
+    BooleanConfigOptionCapabilities,
+    SessionConfigOptionsCapabilities,
 )
 from gsuid_core.logger import logger
 
-from .state import _extract_modes, _extract_models, _extract_mode_config, _extract_model_config
+from .grok import extract_grok_presentation
+from .state import (
+    ConfigOption,
+    _select_values,
+    _find_config_option,
+    _find_config_select,
+)
 from ..paths import same_path
 from .client import ACPClient, PermissionApprovalStore
 from .prompt import PromptBlock
@@ -66,10 +75,16 @@ _SPAWN_FAIL_THRESHOLD = 3
 _SPAWN_COOLDOWN_SEC = 60
 # ACP 握手 (initialize + new/load_session) 总超时：子进程 stdin/stdout 卡死时不让 prompt 永久挂，也兜 npx 冷启动。
 _HANDSHAKE_TIMEOUT_SEC = 60
-_ConfigOption = SessionConfigOptionSelect | SessionConfigOptionBoolean
 _SessionStateResponse = NewSessionResponse | LoadSessionResponse | ResumeSessionResponse
-_ResponseState = _SessionStateResponse | SetSessionConfigOptionResponse | ConfigOptionUpdate
 _T = TypeVar("_T")
+_CLIENT_CAPABILITIES = ClientCapabilities(
+    session=ClientSessionCapabilities(
+        config_options=SessionConfigOptionsCapabilities(
+            boolean=BooleanConfigOptionCapabilities(),
+        ),
+    ),
+    plan=PlanCapabilities(),
+)
 
 
 class BackendError(RuntimeError):
@@ -95,12 +110,11 @@ class ACPSession:
     watch_task: asyncio.Task[None]
     stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=STDERR_TAIL_LINES))
     agent_capabilities: AgentCapabilities | None = None
-    # new/load_session 响应里的当前模型；None = agent 没声明 models（老 adapter），渲染层据此决定是否展示。
+    # ACP 0.11 configOptions 里的当前模型；None = agent 没声明 model config。
     model_id: str | None = None
     model_name: str | None = None
-    # new/load_session 给的整张模型目录；`cc 模型` 用，session 期间稳定不重拉。
-    available_models: tuple[ModelInfo, ...] = ()
-    config_options: tuple[_ConfigOption, ...] = ()
+    available_models: tuple[SessionConfigSelectOption, ...] = ()
+    config_options: tuple[ConfigOption, ...] = ()
     current_mode_id: str | None = None
     available_modes: tuple[SessionMode, ...] = ()
     available_commands: tuple[AvailableCommand, ...] = ()
@@ -116,13 +130,13 @@ class ACPSession:
 
 @dataclass(slots=True, kw_only=True)
 class _SessionPresentation:
-    model_id: str | None
-    model_name: str | None
-    available_models: tuple[ModelInfo, ...]
-    config_options: tuple[_ConfigOption, ...]
-    current_mode_id: str | None
-    available_modes: tuple[SessionMode, ...]
-    model_config_id: str | None
+    model_id: str | None = None
+    model_name: str | None = None
+    available_models: tuple[SessionConfigSelectOption, ...] = ()
+    config_options: tuple[ConfigOption, ...] = ()
+    current_mode_id: str | None = None
+    available_modes: tuple[SessionMode, ...] = ()
+    available_commands: tuple[AvailableCommand, ...] = ()
 
 
 def _supports_resume(caps: AgentCapabilities | None) -> bool:
@@ -145,29 +159,47 @@ def _supports_image_prompt(caps: AgentCapabilities | None) -> bool:
     return bool(caps and caps.prompt_capabilities and caps.prompt_capabilities.image)
 
 
-def _apply_response_state(
-    s: ACPSession,
-    response: _ResponseState | None,
+def _apply_config_options(
+    state: ACPSession | _SessionPresentation,
+    options: list[ConfigOption],
 ) -> None:
-    if response is None:
-        return
-    if not isinstance(response, SetSessionConfigOptionResponse | ConfigOptionUpdate):
-        if response.models is not None:
-            s.model_id, s.model_name, s.available_models = _extract_models(response.models)
-        if response.modes is not None:
-            s.current_mode_id, s.available_modes = _extract_modes(response.modes)
-    config_options = response.config_options
-    if config_options is not None:
-        s.config_options = tuple(config_options)
-        cfg_id, cfg_name, cfg_available, _ = _extract_model_config(s.config_options)
-        if cfg_id is not None:
-            s.model_id = cfg_id
-            s.model_name = cfg_name
-            s.available_models = cfg_available
-        cfg_mode_id, cfg_available_modes, _ = _extract_mode_config(s.config_options)
-        if cfg_mode_id is not None:
-            s.current_mode_id = cfg_mode_id
-            s.available_modes = cfg_available_modes
+    state.config_options = tuple(options)
+    model = _find_config_select(state.config_options, "model")
+    if model is None:
+        state.model_id = None
+        state.model_name = None
+        state.available_models = ()
+    else:
+        state.model_id = model.current_value
+        state.available_models = _select_values(model)
+        state.model_name = next(
+            (item.name for item in state.available_models if item.value == model.current_value),
+            None,
+        )
+    mode = _find_config_select(state.config_options, "mode")
+    if mode is not None:
+        state.current_mode_id = mode.current_value
+        state.available_modes = tuple(
+            SessionMode(id=item.value, name=item.name, description=item.description) for item in _select_values(mode)
+        )
+
+
+async def _set_config_value(
+    conn: ClientSideConnection,
+    state: ACPSession | _SessionPresentation,
+    *,
+    session_id: str,
+    config_id: str,
+    value: str | bool,
+    timeout_sec: float,
+) -> None:
+    async with asyncio.timeout(timeout_sec):
+        response = await conn.set_config_option(
+            config_id=config_id,
+            session_id=session_id,
+            value=value,
+        )
+    _apply_config_options(state, response.config_options)
 
 
 def _reset_prompt_state(s: ACPSession) -> None:
@@ -176,17 +208,9 @@ def _reset_prompt_state(s: ACPSession) -> None:
     s.last_prompt_elapsed = None
 
 
-def _cache_stream_state(s: ACPSession, item: object, *, started_at: float | None = None) -> None:
-    if isinstance(item, UsageUpdate):
-        s.last_usage_update = item
-    elif isinstance(item, PromptResponse):
-        if started_at is not None:
-            s.last_prompt_elapsed = time.monotonic() - started_at
-        if item.usage is not None:
-            s.last_prompt_usage = item.usage
-    elif isinstance(item, ConfigOptionUpdate):
-        s.config_options = tuple(item.config_options)
-        _apply_response_state(s, item)
+def _cache_session_state(s: ACPSession, item: object) -> None:
+    if isinstance(item, ConfigOptionUpdate):
+        _apply_config_options(s, item.config_options)
     elif isinstance(item, CurrentModeUpdate):
         s.current_mode_id = item.current_mode_id
     elif isinstance(item, AvailableCommandsUpdate):
@@ -199,31 +223,34 @@ def _cache_stream_state(s: ACPSession, item: object, *, started_at: float | None
             s.session_updated_at = item.updated_at
 
 
+def _cache_prompt_state(s: ACPSession, item: object, *, started_at: float) -> None:
+    if isinstance(item, UsageUpdate):
+        s.last_usage_update = item
+    elif isinstance(item, PromptResponse):
+        s.last_prompt_elapsed = time.monotonic() - started_at
+        if item.usage is not None:
+            s.last_prompt_usage = item.usage
+    else:
+        _cache_session_state(s, item)
+
+
+def _discard_replayed_events(s: ACPSession) -> None:
+    while True:
+        try:
+            item = s.queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+        _cache_session_state(s, item)
+
+
 def _presentation_from_response(response: _SessionStateResponse) -> _SessionPresentation:
-    model_id, model_name, available_models = _extract_models(response.models)
-    current_mode_id, available_modes = _extract_modes(response.modes)
-    config_options = tuple(response.config_options) if response.config_options is not None else ()
-
-    cfg_model_id, cfg_model_name, cfg_available_models, cfg_model_config_id = _extract_model_config(config_options)
-    if cfg_model_id is not None:
-        model_id = cfg_model_id
-        model_name = cfg_model_name
-        available_models = cfg_available_models
-
-    cfg_mode_id, cfg_available_modes, _ = _extract_mode_config(config_options)
-    if cfg_mode_id is not None:
-        current_mode_id = cfg_mode_id
-        available_modes = cfg_available_modes
-
-    return _SessionPresentation(
-        model_id=model_id,
-        model_name=model_name,
-        available_models=available_models,
-        config_options=config_options,
-        current_mode_id=current_mode_id,
-        available_modes=available_modes,
-        model_config_id=cfg_model_config_id,
-    )
+    state = _SessionPresentation()
+    if response.modes is not None:
+        state.current_mode_id = response.modes.current_mode_id
+        state.available_modes = tuple(response.modes.available_modes)
+    if response.config_options is not None:
+        _apply_config_options(state, response.config_options)
+    return state
 
 
 class ACPBackend:
@@ -248,8 +275,7 @@ class ACPBackend:
             return None, None
         return s.model_id, s.model_name
 
-    def list_models(self, sid: str) -> tuple[str | None, tuple[ModelInfo, ...]]:
-        """返回 (当前 model_id, 全部 ModelInfo)。session 没起就 (None, ())。"""
+    def list_models(self, sid: str) -> tuple[str | None, tuple[SessionConfigSelectOption, ...]]:
         s = self._sess.get(sid)
         if s is None:
             return None, ()
@@ -260,6 +286,10 @@ class ACPBackend:
         if s is None:
             return None, ()
         return s.current_mode_id, s.available_modes
+
+    def list_config_options(self, sid: str) -> tuple[ConfigOption, ...]:
+        s = self._sess.get(sid)
+        return s.config_options if s else ()
 
     def list_commands(self, sid: str) -> tuple[AvailableCommand, ...]:
         s = self._sess.get(sid)
@@ -308,35 +338,67 @@ class ACPBackend:
                 return await action(s)
         except TimeoutError as e:
             raise BackendError(f"切换 {label} 超时") from e
+        except BackendError:
+            raise
         except Exception as e:
             raise BackendError(f"切换 {label} 失败: {e}") from e
 
-    async def set_model(self, sid: str, model_id: str) -> ModelInfo | None:
-        """切到目录内的 model_id。SetSessionModelResponse 是空响应，本地直接更新缓存的
-        (model_id, name)。目录里没有这条返回 None，让上层报 not found。"""
+    async def set_config_option(
+        self,
+        sid: str,
+        config_id: str,
+        value: str | bool,
+    ) -> ConfigOption | None:
+        async def switch(session: ACPSession) -> ConfigOption | None:
+            option = _find_config_option(session.config_options, config_id)
+            if option is None:
+                return None
+            if isinstance(option, SessionConfigOptionSelect):
+                if not isinstance(value, str) or not any(item.value == value for item in _select_values(option)):
+                    raise BackendError(f"{option.id} 不支持值 {value}")
+            elif not isinstance(value, bool):
+                raise BackendError(f"{option.id} 需要 boolean 值")
+            if option.current_value == value:
+                return option
+            await _set_config_value(
+                session.conn,
+                session,
+                session_id=session.acp_sid,
+                config_id=option.id,
+                value=value,
+                timeout_sec=_RPC_MUTATION_TIMEOUT,
+            )
+            updated = _find_config_option(session.config_options, option.id)
+            if updated is None:
+                raise BackendError(f"agent 响应缺少 config {option.id}")
+            return updated
 
-        async def switch(session: ACPSession) -> ModelInfo | None:
-            match = next((model for model in session.available_models if model.model_id == model_id), None)
+        return await self._with_idle_session(sid, f"config {config_id}", switch)
+
+    async def set_model(self, sid: str, model_id: str) -> SessionConfigSelectOption | None:
+        async def switch(session: ACPSession) -> SessionConfigSelectOption | None:
+            match = next((model for model in session.available_models if model.value == model_id), None)
             if match is None:
                 return None
-            _, _, _, config_id = _extract_model_config(session.config_options)
-            if config_id is not None:
-                async with asyncio.timeout(_RPC_MUTATION_TIMEOUT):
-                    resp = await session.conn.set_config_option(
-                        config_id=config_id,
-                        value=model_id,
-                        session_id=session.acp_sid,
-                    )
-                if resp is not None:
-                    session.config_options = tuple(resp.config_options)
-                    _apply_response_state(session, resp)
-                else:
-                    session.model_id, session.model_name = match.model_id, match.name
+            config = _find_config_select(session.config_options, "model")
+            if config is None:
+                raise BackendError(f"{self.engine.name} 未提供 ACP 0.11 model config")
+            if session.model_id == model_id:
                 return match
-            async with asyncio.timeout(_RPC_MUTATION_TIMEOUT):
-                await session.conn.set_session_model(model_id=model_id, session_id=session.acp_sid)
-            session.model_id, session.model_name = match.model_id, match.name
-            return match
+            await _set_config_value(
+                session.conn,
+                session,
+                session_id=session.acp_sid,
+                config_id=config.id,
+                value=model_id,
+                timeout_sec=_RPC_MUTATION_TIMEOUT,
+            )
+            if session.model_id != model_id:
+                raise BackendError(f"agent 未应用 model {model_id}，当前为 {session.model_id}")
+            updated = next((model for model in session.available_models if model.value == model_id), None)
+            if updated is None:
+                raise BackendError(f"agent 响应缺少 model {model_id}")
+            return updated
 
         return await self._with_idle_session(sid, "model", switch)
 
@@ -345,22 +407,24 @@ class ACPBackend:
             match = next((mode for mode in session.available_modes if mode.id == mode_id), None)
             if match is None:
                 return None
-            _, _, config_id = _extract_mode_config(session.config_options)
-            if config_id is not None:
-                async with asyncio.timeout(_RPC_MUTATION_TIMEOUT):
-                    resp = await session.conn.set_config_option(
-                        config_id=config_id,
-                        value=mode_id,
-                        session_id=session.acp_sid,
-                    )
-                if resp is not None:
-                    session.config_options = tuple(resp.config_options)
-                    _apply_response_state(session, resp)
-                else:
-                    session.current_mode_id = mode_id
-                return match
+            config = _find_config_select(session.config_options, "mode")
+            if config is not None:
+                await _set_config_value(
+                    session.conn,
+                    session,
+                    session_id=session.acp_sid,
+                    config_id=config.id,
+                    value=mode_id,
+                    timeout_sec=_RPC_MUTATION_TIMEOUT,
+                )
+                if session.current_mode_id != mode_id:
+                    raise BackendError(f"agent 未应用 mode {mode_id}，当前为 {session.current_mode_id}")
+                updated = next((mode for mode in session.available_modes if mode.id == mode_id), None)
+                if updated is None:
+                    raise BackendError(f"agent 响应缺少 mode {mode_id}")
+                return updated
             async with asyncio.timeout(_RPC_MUTATION_TIMEOUT):
-                await session.conn.set_session_mode(mode_id=mode_id, session_id=session.acp_sid)
+                await session.conn.set_session_mode(session_id=session.acp_sid, mode_id=mode_id)
             session.current_mode_id = mode_id
             return match
 
@@ -415,7 +479,7 @@ class ACPBackend:
             async with asyncio.timeout(_HANDSHAKE_TIMEOUT_SEC):
                 init = await conn.initialize(
                     protocol_version=PROTOCOL_VERSION,
-                    client_capabilities=ClientCapabilities(),
+                    client_capabilities=_CLIENT_CAPABILITIES,
                     client_info=Implementation(name="CCUID", version=VERSION),
                 )
                 if not _supports_list(init.agent_capabilities):
@@ -457,8 +521,8 @@ class ACPBackend:
             t0 = time.monotonic()
             # 同 session 跨 prompt 复用同一条 queue；上一轮 cancel 收尾可能残留 session_update，
             # 进新一轮前清掉，否则被新 prompt 的 loop 误当自己的输出（症状：新提问返回上次答案）。
-            while not s.queue.empty():
-                s.queue.get_nowait()
+            # 配置 / 模式 / 命令 / session 信息是持久状态，要更新缓存；历史正文与旧 usage 仍直接丢弃。
+            _discard_replayed_events(s)
             task = asyncio.create_task(self._request_prompt(s, blocks))
             try:
                 while True:
@@ -470,7 +534,7 @@ class ACPBackend:
                         # prompt 阶段错误（如 codex TLS 重连）：不附 stderr，那坨 noise 进日志够排查了，错误卡只给主因
                         raise BackendError(str(item)) from item
                     # sniff before yield —— footer/render 各自消费
-                    _cache_stream_state(s, item, started_at=t0)
+                    _cache_prompt_state(s, item, started_at=t0)
                     yield item
                     if isinstance(item, PromptResponse):
                         await self._drain_trailing_updates(s)
@@ -504,7 +568,10 @@ class ACPBackend:
                 return
             if item is None or isinstance(item, BaseException):
                 continue
-            _cache_stream_state(s, item)
+            if isinstance(item, UsageUpdate):
+                s.last_usage_update = item
+            else:
+                _cache_session_state(s, item)
 
     async def cancel(self, sid: str) -> None:
         s = self._sess.get(sid)
@@ -619,15 +686,15 @@ class ACPBackend:
             f"[CCUID/{self.engine.name}] 连续 {self._spawn_failures} 次启动失败，熔断 {_SPAWN_COOLDOWN_SEC}s"
         )
 
-    async def _initialize_connection(self, conn: ClientSideConnection) -> AgentCapabilities | None:
+    async def _initialize_connection(self, conn: ClientSideConnection) -> InitializeResponse:
         init = await conn.initialize(
             protocol_version=PROTOCOL_VERSION,
-            client_capabilities=ClientCapabilities(),
+            client_capabilities=_CLIENT_CAPABILITIES,
             client_info=Implementation(name="CCUID", version=VERSION),
         )
         if init.protocol_version != PROTOCOL_VERSION:
             logger.warning(f"[CCUID/{self.engine.name}] protocol {init.protocol_version} != {PROTOCOL_VERSION}")
-        return init.agent_capabilities
+        return init
 
     async def _open_session(
         self,
@@ -643,7 +710,7 @@ class ACPBackend:
 
         if _supports_resume(agent_capabilities):
             try:
-                return resume_id, await conn.resume_session(cwd=workdir, session_id=resume_id)
+                return resume_id, await conn.resume_session(session_id=resume_id, cwd=workdir)
             except Exception as resume_err:
                 logger.debug(f"[CCUID/{self.engine.name}] resume_session 失败，尝试 load_session: {resume_err}")
 
@@ -658,6 +725,39 @@ class ACPBackend:
         new_resp = await conn.new_session(cwd=workdir)
         return new_resp.session_id, new_resp
 
+    async def _normalize_initial_mode(
+        self,
+        conn: ClientSideConnection,
+        *,
+        acp_sid: str,
+        state: _SessionPresentation,
+    ) -> None:
+        override = self.engine.initial_mode_override
+        if override is None:
+            return
+        unsafe_mode_id, safe_mode_id = override
+        if state.current_mode_id != unsafe_mode_id:
+            return
+        if not any(mode.id == safe_mode_id for mode in state.available_modes):
+            raise BackendError(
+                f"{self.engine.name} reported unsafe mode {unsafe_mode_id}, but safe mode {safe_mode_id} is unavailable"
+            )
+        config = _find_config_select(state.config_options, "mode")
+        if config is None:
+            raise BackendError(
+                f"{self.engine.name} reported unsafe mode {unsafe_mode_id} without an ACP 0.11 mode config"
+            )
+        await _set_config_value(
+            conn,
+            state,
+            session_id=acp_sid,
+            config_id=config.id,
+            value=safe_mode_id,
+            timeout_sec=_HANDSHAKE_TIMEOUT_SEC,
+        )
+        if state.current_mode_id != safe_mode_id:
+            raise BackendError(f"{self.engine.name} failed to normalize mode {unsafe_mode_id} to {safe_mode_id}")
+
     async def _reapply_sticky_model(
         self,
         conn: ClientSideConnection,
@@ -670,24 +770,25 @@ class ACPBackend:
         if sticky is None or sticky == state.model_id:
             return
 
-        sticky_name = next((model.name for model in state.available_models if model.model_id == sticky), None)
-        if sticky_name is None:
+        if not any(model.value == sticky for model in state.available_models):
             await CCUIDSessionModel.drop(sid)
             return
 
+        config = _find_config_select(state.config_options, "model")
+        if config is None:
+            await CCUIDSessionModel.drop(sid)
+            return
         try:
-            async with asyncio.timeout(_HANDSHAKE_TIMEOUT_SEC):
-                if state.model_config_id is not None:
-                    resp = await conn.set_config_option(
-                        config_id=state.model_config_id,
-                        value=sticky,
-                        session_id=acp_sid,
-                    )
-                    if resp is not None:
-                        state.config_options = tuple(resp.config_options)
-                else:
-                    await conn.set_session_model(model_id=sticky, session_id=acp_sid)
-            state.model_id, state.model_name = sticky, sticky_name
+            await _set_config_value(
+                conn,
+                state,
+                session_id=acp_sid,
+                config_id=config.id,
+                value=sticky,
+                timeout_sec=_HANDSHAKE_TIMEOUT_SEC,
+            )
+            if state.model_id != sticky:
+                raise BackendError(f"{self.engine.name} did not apply model {sticky}")
         except Exception as sticky_err:
             logger.debug(f"[CCUID/{self.engine.name}] sticky {sticky} reapply: {sticky_err}")
             await CCUIDSessionModel.drop(sid)
@@ -706,7 +807,8 @@ class ACPBackend:
             conn = connect_to_agent(client, *stdio(proc, engine_name=self.engine.name), use_unstable_protocol=True)
             # 子进程 stdout 卡死会让握手永久挂；一个总超时罩住 initialize + new/load_session，超时由外层 except 清进程。
             async with asyncio.timeout(_HANDSHAKE_TIMEOUT_SEC):
-                agent_capabilities = await self._initialize_connection(conn)
+                initialize_response = await self._initialize_connection(conn)
+                agent_capabilities = initialize_response.agent_capabilities
                 acp_sid, session_response = await self._open_session(
                     conn,
                     workdir=workdir,
@@ -714,6 +816,20 @@ class ACPBackend:
                     agent_capabilities=agent_capabilities,
                 )
             state = _presentation_from_response(session_response)
+            if self.engine.grok_metadata:
+                grok = extract_grok_presentation(
+                    initialize_response.field_meta,
+                    session_response.field_meta,
+                )
+                state.model_id = grok.model_id
+                state.model_name = grok.model_name
+                state.available_models = grok.available_models
+                state.available_commands = grok.available_commands
+            await self._normalize_initial_mode(
+                conn,
+                acp_sid=acp_sid,
+                state=state,
+            )
             # reapply 失败 / id 已不在 available 时 drop 记录，回 default 不再重试。
             await self._reapply_sticky_model(conn, sid=sid, acp_sid=acp_sid, state=state)
         except asyncio.CancelledError:
@@ -756,6 +872,7 @@ class ACPBackend:
             config_options=state.config_options,
             current_mode_id=state.current_mode_id,
             available_modes=state.available_modes,
+            available_commands=state.available_commands,
         )
 
     async def _teardown(self, s: ACPSession) -> None:

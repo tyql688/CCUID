@@ -9,6 +9,7 @@ from acp.schema import (
     DeniedOutcome,
     AllowedOutcome,
     ToolCallUpdate,
+    ElicitationMode,
     PermissionOption,
     KillTerminalResponse,
     ReadTextFileResponse,
@@ -17,6 +18,7 @@ from acp.schema import (
     TerminalOutputResponse,
     ReleaseTerminalResponse,
     RequestPermissionRequest,
+    CreateElicitationResponse,
     WaitForTerminalExitResponse,
 )
 
@@ -55,9 +57,9 @@ class ACPClient(Client):
 
     async def request_permission(
         self,
-        options: list[PermissionOption],
         session_id: str,
         tool_call: ToolCallUpdate,
+        options: list[PermissionOption],
         **_: object,
     ) -> RequestPermissionResponse:
         """按 PermissionMode 分流：`ask` 挂 future 等用户审批，自动模式直接选对应 kind 的 PermissionOption。"""
@@ -96,30 +98,30 @@ class ACPClient(Client):
 
     async def write_text_file(
         self,
-        content: str,
-        path: str,
         session_id: str,
+        path: str,
+        content: str,
         **_: object,
     ) -> WriteTextFileResponse | None:
         _disabled("fs/write_text_file")
 
     async def read_text_file(
         self,
-        path: str,
         session_id: str,
-        limit: int | None = None,
+        path: str,
         line: int | None = None,
+        limit: int | None = None,
         **_: object,
     ) -> ReadTextFileResponse:
         _disabled("fs/read_text_file")
 
     async def create_terminal(
         self,
-        command: str,
         session_id: str,
+        command: str,
         args: list[str] | None = None,
-        cwd: str | None = None,
         env: list[EnvVariable] | None = None,
+        cwd: str | None = None,
         output_byte_limit: int | None = None,
         **_: object,
     ) -> CreateTerminalResponse:
@@ -157,11 +159,26 @@ class ACPClient(Client):
     ) -> KillTerminalResponse | None:
         _disabled("terminal")
 
+    async def create_elicitation(
+        self,
+        message: str,
+        mode: ElicitationMode,
+        **_: object,
+    ) -> CreateElicitationResponse:
+        _disabled("elicitation")
+
+    async def complete_elicitation(
+        self,
+        elicitation_id: str,
+        **_: object,
+    ) -> None:
+        _disabled("elicitation")
+
     async def ext_method(self, method: str, params: dict[str, object]) -> dict[str, object]:
         _disabled(f"extension method: {method}")
 
     async def ext_notification(self, method: str, params: dict[str, object]) -> None:
-        _disabled(f"extension notification: {method}")
+        return None
 
     def on_connect(self, conn: Agent) -> None:
         return None

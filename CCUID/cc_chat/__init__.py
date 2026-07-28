@@ -6,6 +6,7 @@ from .common import current_engine
 from ..utils.auth import require_auth
 from .chat_service import do_chat, do_deny, do_approve
 from .model_service import (
+    do_config,
     do_mode_set,
     do_mode_show,
     do_model_set,
@@ -42,6 +43,27 @@ async def engine(bot: Bot, ev: Event) -> None:
         await do_engine_show(bot, ev)
     else:
         await do_engine_set(bot, ev, arg)
+
+
+@sv_cmd.on_command(("config", "配置"), block=True)
+@require_auth
+async def config(bot: Bot, ev: Event) -> None:
+    args = ev.text.strip().split(maxsplit=1)
+    key = args[0] if args else None
+    value = args[1] if len(args) == 2 else None
+    await do_config(bot, ev, await current_engine(ev), key, value)
+
+
+@sv_cmd.on_command(("reasoning_effort", "effort"), block=True)
+@require_auth
+async def effort(bot: Bot, ev: Event) -> None:
+    await do_config(bot, ev, await current_engine(ev), "thought_level", ev.text.strip())
+
+
+@sv_cmd.on_command(("fast-mode", "fast"), block=True)
+@require_auth
+async def fast(bot: Bot, ev: Event) -> None:
+    await do_config(bot, ev, await current_engine(ev), "fast-mode", ev.text.strip())
 
 
 @sv_cmd.on_command(("model", "模型"), block=True)

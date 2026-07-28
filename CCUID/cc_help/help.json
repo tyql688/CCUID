@@ -36,7 +36,7 @@
       },
       {
         "name": "命令审批",
-                "desc": "PermissionPolicy=ask 时，按提示或用命令审核",
+        "desc": "PermissionPolicy=ask 时，按提示或用命令审核",
         "eg": "允许",
         "need_ck": false,
         "need_sk": false,
@@ -102,6 +102,14 @@
         "need_ck": false,
         "need_sk": false,
         "need_admin": false
+      },
+      {
+        "name": "切换到grok",
+        "desc": "切到grok engine（当前 model 只读）",
+        "eg": "eng grok",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
       }
     ]
   },
@@ -141,6 +149,35 @@
         "name": "switch mode",
         "desc": "切到指定 mode_id / 序号 / name 子串",
         "eg": "mode code",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      }
+    ]
+  },
+  "Config": {
+    "desc": "查看 / 修改当前 session 的 ACP configOptions",
+    "data": [
+      {
+        "name": "config list",
+        "desc": "列出 agent 提供的配置；追加 id 可只看一项",
+        "eg": "config",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "set config",
+        "desc": "select 支持 value / 序号 / name 子串；boolean 支持 on / off",
+        "eg": "config reasoning_effort high",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "config shortcuts",
+        "desc": "effort 对应 thought_level；fast 对应 fast-mode",
+        "eg": "effort max / fast on",
         "need_ck": false,
         "need_sk": false,
         "need_admin": false

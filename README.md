@@ -13,7 +13,7 @@
 
 ---
 
-通过 [ACP](https://agentclientprotocol.com) 把 cli coding agents 接进 gsuid_core，在 IM 上对话。**复用本机已登录的 CLI 凭证**，不要求额外 API key。支持的 engine 见下表。
+通过 [ACP](https://agentclientprotocol.com) 把 CLI coding agents 接进 gsuid_core，在 IM 上对话。认证由各 CLI 自己管理，CCUID 不保存 API key；使用前需先按对应 CLI 的方式完成登录。支持的 engine 见下表。
 
 > [!CAUTION]
 > **不建议开放群组使用，后果自负。**
@@ -24,14 +24,15 @@
 
 ## 支持的 engines
 
-| Engine     | 启动命令                                 | 安装/登录                                                                                                                                                       |
-| ---------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude`   | `npx -y @zed-industries/claude-code-acp` | [claude-code-acp](https://github.com/zed-industries/claude-code-acp)                                                                                            |
-| `codex`    | `npx -y @zed-industries/codex-acp`       | [codex-acp](https://github.com/zed-industries/codex-acp)                                                                                                        |
-| `cursor`   | `cursor-agent acp`                       | [cursor CLI](https://docs.cursor.com/cli/installation)                                                                                                          |
-| `opencode` | `opencode acp`                           | [opencode](https://opencode.ai/docs/acp/)                                                                                                                       |
-| `kimi`     | `kimi acp`                               | [Kimi Code CLI](https://moonshotai.github.io/kimi-code/) / [Kimi CLI](https://moonshotai.github.io/kimi-cli/en/guides/getting-started.html)（二选一，不能共存） |
-| `gemini`   | `gemini --acp`                           | [Gemini CLI ACP mode](https://geminicli.com/docs/cli/acp-mode/)                                                                                                 |
+| Engine     | 启动命令                                              | 安装/登录                                                                                                                                                       |
+| ---------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude`   | `npx -y @agentclientprotocol/claude-agent-acp@0.63.0` | [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)；先执行 Claude CLI 登录                                                             |
+| `codex`    | `npx -y @agentclientprotocol/codex-acp@1.1.7`         | [codex-acp](https://github.com/agentclientprotocol/codex-acp)                                                                                                   |
+| `cursor`   | `cursor-agent acp`                                    | [cursor CLI](https://docs.cursor.com/cli/installation)                                                                                                          |
+| `opencode` | `opencode acp`                                        | [opencode](https://opencode.ai/docs/acp/)                                                                                                                       |
+| `kimi`     | `kimi acp`                                            | [Kimi Code CLI](https://moonshotai.github.io/kimi-code/) / [Kimi CLI](https://moonshotai.github.io/kimi-cli/en/guides/getting-started.html)（二选一，不能共存） |
+| `gemini`   | `gemini --acp`                                        | [Gemini CLI ACP mode](https://geminicli.com/docs/cli/acp-mode/)                                                                                                 |
+| `grok`     | `grok agent stdio`                                    | [Grok CLI](https://x.ai/cli)                                                                                                                                    |
 
 ## 其他工具
 
@@ -40,17 +41,17 @@
 
 ## 安装
 
-需要 Python 3.11+ 和已装好的 [gsuid_core](https://github.com/Genshin-bots/gsuid_core)。
+需要 Python 3.11+、`agent-client-protocol>=0.11.1,<0.12` 和已装好的 [gsuid_core](https://github.com/Genshin-bots/gsuid_core)。固定版 Claude ACP adapter 要求 Node.js 22+，Codex ACP adapter 要求 Node.js 20+。
 
 ```
 core安装插件CCUID
 ```
 
-重启 Core 即生效。claude / codex 走 npx（需要 Node.js 18+），建议预拉一次避免冷启动：
+重启 Core 即生效。Claude / Codex 走 npx，建议预拉固定版本避免冷启动：
 
 ```bash
-npx -y @zed-industries/claude-code-acp --version
-npx -y @zed-industries/codex-acp --version
+npx -y @agentclientprotocol/claude-agent-acp@0.63.0 --version
+npx -y @agentclientprotocol/codex-acp@1.1.7 --version
 ```
 
 命令与配置项见 `cc帮助`。
@@ -70,17 +71,6 @@ npx -y @zed-industries/codex-acp --version
   ```
 
   `AgentProxyMode=false` 默认不注入；`true` 按 `AgentProxyAgents` 注入，`["all"]` 表示全部，留空表示不注入。改完重启 gscore，或执行 `cc new`。
-
-- OpenCode 的模型由它自己的 `~/.config/opencode/opencode.jsonc` 决定，具体 [issue](https://github.com/anomalyco/opencode/issues/4001)。没显式写 `model` 时，`opencode acp` 会使用 OpenCode 默认模型，常见显示为 `OpenCode Zen/Big Pickle`。需要固定模型就写：
-
-  ```jsonc
-  {
-    "$schema": "https://opencode.ai/config.json",
-    "model": "opencode/deepseek-v4-flash-free",
-  }
-  ```
-
-  改完后重启 gscore，或对当前 OpenCode 会话执行 `cc new` 重新拉起 agent。
 
 ## 许可
 

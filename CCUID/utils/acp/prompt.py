@@ -22,3 +22,7 @@ def text_block(text: str) -> TextContentBlock:
 
 def image_block(raw: bytes, mime_type: str) -> ImageContentBlock:
     return ImageContentBlock(type="image", data=base64.b64encode(raw).decode("ascii"), mime_type=mime_type)
+
+
+def audio_block(raw: bytes, mime_type: str) -> AudioContentBlock:
+    return AudioContentBlock(type="audio", data=base64.b64encode(raw).decode("ascii"), mime_type=mime_type)

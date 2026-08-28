@@ -3,13 +3,14 @@ from __future__ import annotations
 import re
 import base64
 from html import escape
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal, TypedDict
 from pathlib import Path
 from datetime import datetime
 from functools import lru_cache
 from dataclasses import field, dataclass
 
 from pygments import highlight
+from acp.schema import PermissionOption, ToolCallLocation
 from markdown_it import MarkdownIt
 from pygments.util import ClassNotFound
 from pygments.lexer import Lexer
@@ -18,6 +19,7 @@ from mdit_py_plugins.gfm import gfm_plugin
 from mdit_py_plugins.deflist import deflist_plugin
 from pygments.formatters.html import HtmlFormatter
 
+from .acp.permission import PermissionMode
 from .playwright_render import render_html_to_pngs
 from .presentation.permission import permission_display, clean_permission_summary
 
@@ -50,7 +52,7 @@ def engine_icon_url(engine_name: str) -> str | None:
     return f"data:image/png;base64,{data}"
 
 
-_FONT_URL = re.compile(r"url\([\"']?(fonts/[^)\"']+)[\"']?\)")
+_FONT_URL = re.compile(r"url\([\"']?(fonts/[^)\"']+\.woff2)[\"']?\)")
 
 _SINGLE_IMAGE_HEIGHT_CSS_PX = 6000
 _IMAGE_SLICE_HEIGHT_CSS_PX = 6000
@@ -124,6 +126,7 @@ _UNTRUSTED_MD_ENGINE = _build_md_engine()
 BlockKind = Literal[
     "agent_md",
     "agent_image",
+    "agent_audio",
     "think",
     "tool",
     "tool_failed",
@@ -136,11 +139,26 @@ BlockKind = Literal[
 ]
 
 
+class ChatMeta(TypedDict, total=False):
+    data: str
+    mime_type: str
+    decision: PermissionMode
+    kind: str | None
+    title: str | None
+    matched: bool
+    locations: tuple[ToolCallLocation, ...]
+    content_summary: str | None
+    options: list[PermissionOption]
+    plan_id: str
+    tool_call_id: str
+    summary: str | None
+
+
 @dataclass(slots=True, frozen=True)
 class ChatBlock:
     kind: BlockKind
     body: str
-    meta: dict[str, Any] = field(default_factory=dict)
+    meta: ChatMeta = field(default_factory=dict)
 
 
 def _format_duration(sec: float) -> str:
@@ -204,12 +222,14 @@ def _render_labeled_markdown(label: str, label_kind: str, body: str) -> str:
 def _render_block(block: ChatBlock) -> str:
     if block.kind == "agent_md":
         return _render_untrusted_markdown(block.body)
-    if block.kind == "agent_image":
+    if block.kind in {"agent_image", "agent_audio"}:
         return ""
     if block.kind == "think":
         return f'<div class="cc-think">{_tag("think")}{_text(block.body)}</div>'
     if block.kind == "tool":
         kind = block.meta["kind"]
+        if kind is None:
+            raise ValueError("tool block kind must not be None")
         if kind == "other":
             return _render_untrusted_markdown(block.body)
         return f'<div class="cc-tool cc-tool-{kind}">{_render_labeled_markdown(kind, kind, block.body)}</div>'

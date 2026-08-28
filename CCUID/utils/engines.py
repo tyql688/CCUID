@@ -17,14 +17,14 @@ ENGINE_SPECS: tuple[EngineSpec, ...] = (
     EngineSpec(
         "claude",
         "Claude Code",
-        ("npx", "-y", "@agentclientprotocol/claude-agent-acp@0.63.0"),
+        ("npx", "-y", "@agentclientprotocol/claude-agent-acp@0.70.0"),
         install_url="https://github.com/agentclientprotocol/claude-agent-acp",
         initial_mode_override=("bypassPermissions", "default"),
     ),
     EngineSpec(
         "codex",
         "Codex",
-        ("npx", "-y", "@agentclientprotocol/codex-acp@1.1.7"),
+        ("npx", "-y", "@agentclientprotocol/codex-acp@1.7.0"),
         install_url="https://github.com/agentclientprotocol/codex-acp",
     ),
     EngineSpec(

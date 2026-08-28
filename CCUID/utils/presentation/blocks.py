@@ -16,6 +16,7 @@ from acp.schema import (
     UserMessageChunk,
     AgentMessageChunk,
     AgentThoughtChunk,
+    AudioContentBlock,
     CurrentModeUpdate,
     ImageContentBlock,
     SessionInfoUpdate,
@@ -28,7 +29,7 @@ from acp.schema import (
 
 from gsuid_core.logger import logger
 
-from ..render import ChatBlock
+from ..render import ChatMeta, ChatBlock
 from .permission import permission_display, clean_permission_summary
 from ..acp.backend import PromptUsage
 from .tool_content import summarize_tool_content
@@ -100,10 +101,8 @@ class _RenderBuffer:
         self.flush_streams()
         blocks = self.pending
         for block in blocks:
-            if block.kind == "plan":
-                plan_id = block.meta.get("plan_id")
-                if isinstance(plan_id, str):
-                    self.delivered_plan_ids.add(plan_id)
+            if block.kind == "plan" and "plan_id" in block.meta:
+                self.delivered_plan_ids.add(block.meta["plan_id"])
         self.pending = []
         return blocks
 
@@ -153,8 +152,10 @@ def _permission_block(ev: PermissionEvent) -> ChatBlock:
     )
 
 
-def _tool_meta_text(block: ChatBlock, key: str) -> str | None:
-    value = block.meta.get(key)
+def _tool_meta_text(block: ChatBlock, key: Literal["title", "summary"]) -> str | None:
+    if key not in block.meta:
+        return None
+    value = block.meta[key]
     if isinstance(value, str):
         text = value.strip()
         return None if text == "" else text
@@ -175,13 +176,15 @@ def _compose_tool_body(title: str | None, summary: str | None) -> str:
 
 
 def _tool_call_id(block: ChatBlock) -> str | None:
-    value = block.meta.get("tool_call_id")
-    return value if isinstance(value, str) and value else None
+    if "tool_call_id" not in block.meta:
+        return None
+    value = block.meta["tool_call_id"]
+    return value if value else None
 
 
 def _merge_tool_block(previous: ChatBlock, block: ChatBlock) -> ChatBlock:
-    old_kind = previous.meta.get("kind")
-    new_kind = block.meta.get("kind")
+    old_kind = previous.meta["kind"] if "kind" in previous.meta else None
+    new_kind = block.meta["kind"] if "kind" in block.meta else None
     kind = old_kind if new_kind == "other" and isinstance(old_kind, str) else new_kind
     if not isinstance(kind, str):
         kind = "other"
@@ -194,7 +197,9 @@ def _merge_tool_block(previous: ChatBlock, block: ChatBlock) -> ChatBlock:
         body = block.body
     if body == "":
         body = previous.body
-    meta = {**previous.meta, **block.meta, "kind": kind, "title": title, "summary": summary}
+    meta: ChatMeta = previous.meta.copy()
+    meta.update(block.meta)
+    meta.update({"kind": kind, "title": title, "summary": summary})
     return ChatBlock("tool", body, meta=meta)
 
 
@@ -202,7 +207,7 @@ def _merge_with_tool_history(history: dict[str, ChatBlock], block: ChatBlock) ->
     tid = _tool_call_id(block) if block.kind == "tool" else None
     if tid is None:
         return block
-    previous = history.get(tid)
+    previous = history[tid] if tid in history else None
     merged = _merge_tool_block(previous, block) if previous is not None else block
     history[tid] = merged
     return merged
@@ -218,6 +223,8 @@ def _classify(
     if isinstance(ev, AgentMessageChunk):
         if isinstance(ev.content, ImageContentBlock):
             return ChatBlock("agent_image", "", meta={"data": ev.content.data, "mime_type": ev.content.mime_type})
+        if isinstance(ev.content, AudioContentBlock):
+            return ChatBlock("agent_audio", "", meta={"data": ev.content.data, "mime_type": ev.content.mime_type})
         text = _chunk_text(ev.content)
         return ("agent", text, ev.message_id) if text else None
     if isinstance(ev, AgentThoughtChunk) and show_thinking:
@@ -237,8 +244,9 @@ def _classify(
         )
     if isinstance(ev, ToolCallProgress) and show_tools:
         if ev.status == "failed":
-            err = ev.raw_output.get("error") if isinstance(ev.raw_output, dict) else None
-            return ChatBlock("tool_failed", str(err) if err is not None else "failed")
+            if isinstance(ev.raw_output, dict) and "error" in ev.raw_output:
+                return ChatBlock("tool_failed", str(ev.raw_output["error"]))
+            return ChatBlock("tool_failed", "failed")
         if tool_display == "full" and ev.content:
             summary = summarize_tool_content(ev.content)
             if summary:
@@ -281,24 +289,30 @@ def _append_or_replace_tool(buf: list[ChatBlock], block: ChatBlock) -> None:
     if tid is not None:
         for i in range(len(buf) - 1, -1, -1):
             b = buf[i]
-            if b.kind == "tool" and b.meta.get("tool_call_id") == tid:
+            if b.kind == "tool" and _tool_call_id(b) == tid:
                 buf[i] = _merge_tool_block(b, block)
                 return
     buf.append(block)
 
 
 def _append_or_replace_plan(buf: list[ChatBlock], block: ChatBlock) -> None:
-    plan_id = block.meta.get("plan_id")
+    if "plan_id" not in block.meta:
+        raise ValueError("plan block must include plan_id")
+    plan_id = block.meta["plan_id"]
     for index in range(len(buf) - 1, -1, -1):
         previous = buf[index]
-        if previous.kind == "plan" and previous.meta.get("plan_id") == plan_id:
+        if previous.kind == "plan" and "plan_id" in previous.meta and previous.meta["plan_id"] == plan_id:
             buf[index] = block
             return
     buf.append(block)
 
 
 def _remove_plan(buf: list[ChatBlock], plan_id: str) -> None:
-    buf[:] = [block for block in buf if not (block.kind == "plan" and block.meta.get("plan_id") == plan_id)]
+    buf[:] = [
+        block
+        for block in buf
+        if not (block.kind == "plan" and "plan_id" in block.meta and block.meta["plan_id"] == plan_id)
+    ]
 
 
 def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
@@ -311,6 +325,8 @@ def blocks_to_text_parts(blocks: list[ChatBlock]) -> list[str]:
             out.append(f"think: {block.body}")
         elif block.kind == "tool":
             kind = block.meta["kind"]
+            if kind is None:
+                raise ValueError("tool block kind must not be None")
             out.append(block.body if kind == "other" else f"{kind}: {block.body}")
         elif block.kind == "tool_failed":
             out.append(f"tool failed: {block.body}")

@@ -22,6 +22,7 @@ from acp.schema import (
     AvailableCommand,
     PlanCapabilities,
     AgentCapabilities,
+    AudioContentBlock,
     CurrentModeUpdate,
     ImageContentBlock,
     SessionInfoUpdate,
@@ -110,7 +111,7 @@ class ACPSession:
     watch_task: asyncio.Task[None]
     stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=STDERR_TAIL_LINES))
     agent_capabilities: AgentCapabilities | None = None
-    # ACP 0.11 configOptions 里的当前模型；None = agent 没声明 model config。
+    # ACP configOptions 里的当前模型；None = agent 没声明 model config。
     model_id: str | None = None
     model_name: str | None = None
     available_models: tuple[SessionConfigSelectOption, ...] = ()
@@ -157,6 +158,10 @@ def _supports_load(caps: AgentCapabilities | None) -> bool:
 
 def _supports_image_prompt(caps: AgentCapabilities | None) -> bool:
     return bool(caps and caps.prompt_capabilities and caps.prompt_capabilities.image)
+
+
+def _supports_audio_prompt(caps: AgentCapabilities | None) -> bool:
+    return bool(caps and caps.prompt_capabilities and caps.prompt_capabilities.audio)
 
 
 def _apply_config_options(
@@ -382,7 +387,7 @@ class ACPBackend:
                 return None
             config = _find_config_select(session.config_options, "model")
             if config is None:
-                raise BackendError(f"{self.engine.name} 未提供 ACP 0.11 model config")
+                raise BackendError(f"{self.engine.name} 未提供 ACP model config")
             if session.model_id == model_id:
                 return match
             await _set_config_value(
@@ -509,6 +514,10 @@ class ACPBackend:
             s.agent_capabilities
         ):
             raise BackendError(f"{self.engine.name} 当前未声明支持图片输入")
+        if any(isinstance(block, AudioContentBlock) for block in blocks) and not _supports_audio_prompt(
+            s.agent_capabilities
+        ):
+            raise BackendError(f"{self.engine.name} 当前未声明支持语音输入")
         if s.rpc_lock.locked():
             raise BackendError("session 正在切换配置，稍后再发送")
 
@@ -744,9 +753,7 @@ class ACPBackend:
             )
         config = _find_config_select(state.config_options, "mode")
         if config is None:
-            raise BackendError(
-                f"{self.engine.name} reported unsafe mode {unsafe_mode_id} without an ACP 0.11 mode config"
-            )
+            raise BackendError(f"{self.engine.name} reported unsafe mode {unsafe_mode_id} without an ACP mode config")
         await _set_config_value(
             conn,
             state,

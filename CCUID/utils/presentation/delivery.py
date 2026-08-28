@@ -130,7 +130,7 @@ async def send_permission_request(bot: Bot, block: ChatBlock, ctx: RenderContext
 async def send_blocks(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext) -> None:
     if not blocks:
         return
-    renderable = [block for block in blocks if block.kind != "agent_image"]
+    renderable = [block for block in blocks if block.kind not in {"agent_image", "agent_audio"}]
     if _should_image(renderable):
         sent = await _send_as_images(bot, renderable, ctx)
         if not sent:
@@ -138,6 +138,7 @@ async def send_blocks(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext) -> 
     else:
         await _send_as_text(bot, renderable)
     await _send_agent_images(bot, blocks)
+    await _send_agent_audio(bot, blocks)
     await _send_referenced_attachments(bot, renderable, ctx)
 
 
@@ -152,8 +153,13 @@ _MAX_FILE_BYTES = 100 * 1024 * 1024
 _MAX_REFERENCED_ATTACHMENTS = 8
 _MAX_AGENT_IMAGE_BYTES = _MAX_IMAGE_BYTES
 _MAX_AGENT_IMAGE_BASE64_CHARS = ((_MAX_AGENT_IMAGE_BYTES + 2) // 3) * 4 + 4
+_MAX_AGENT_AUDIO_BYTES = 30 * 1024 * 1024
+_MAX_AGENT_AUDIO_BASE64_CHARS = ((_MAX_AGENT_AUDIO_BYTES + 2) // 3) * 4 + 4
 _SUPPORTED_AGENT_IMAGE_MIME_TYPES = frozenset(
     {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/bmp"}
+)
+_SUPPORTED_AGENT_AUDIO_MIME_TYPES = frozenset(
+    {"audio/aac", "audio/flac", "audio/m4a", "audio/mp4", "audio/mpeg", "audio/ogg", "audio/wav", "audio/webm"}
 )
 
 
@@ -233,9 +239,36 @@ async def _send_agent_images(bot: Bot, blocks: list[ChatBlock]) -> None:
     for block in blocks:
         if block.kind != "agent_image":
             continue
-        if not _agent_image_mime_supported(block.meta.get("mime_type")):
+        if "mime_type" not in block.meta or not _agent_image_mime_supported(block.meta["mime_type"]):
             continue
-        data = _decode_agent_image(block.meta.get("data"))
+        if "data" not in block.meta:
+            continue
+        data = _decode_agent_image(block.meta["data"])
         if data is None:
             continue
         await bot.send(MessageSegment.image(data))
+
+
+async def _send_agent_audio(bot: Bot, blocks: list[ChatBlock]) -> None:
+    for block in blocks:
+        if block.kind != "agent_audio":
+            continue
+        if "mime_type" not in block.meta:
+            continue
+        raw_mime = block.meta["mime_type"]
+        if (
+            not isinstance(raw_mime, str)
+            or raw_mime.split(";", 1)[0].strip().lower() not in _SUPPORTED_AGENT_AUDIO_MIME_TYPES
+        ):
+            continue
+        if "data" not in block.meta:
+            continue
+        raw_data = block.meta["data"]
+        if len(raw_data) > _MAX_AGENT_AUDIO_BASE64_CHARS:
+            continue
+        try:
+            data = base64.b64decode(raw_data, validate=True)
+        except (binascii.Error, ValueError):
+            continue
+        if len(data) <= _MAX_AGENT_AUDIO_BYTES:
+            await bot.send(MessageSegment.record(data))

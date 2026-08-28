@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TypeAlias
 from dataclasses import dataclass
 
 from pydantic import Field, AliasPath, BaseModel, AliasChoices, ValidationError
 
 from acp.schema import AvailableCommand, SessionConfigSelectOption
 from gsuid_core.logger import logger
+
+JsonValue: TypeAlias = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
 
 
 class _GrokModel(BaseModel):
@@ -42,10 +45,10 @@ class GrokPresentation:
 
 
 def extract_grok_presentation(
-    initialize_metadata: dict[str, Any] | None,
-    session_metadata: dict[str, Any] | None,
+    initialize_metadata: JsonObject | None,
+    session_metadata: JsonObject | None,
 ) -> GrokPresentation:
-    raw: dict[str, Any] = {}
+    raw: JsonObject = {}
     if initialize_metadata is not None:
         raw.update(initialize_metadata)
     if session_metadata is not None:

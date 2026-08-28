@@ -6,7 +6,7 @@ import shutil
 import signal
 import asyncio
 import contextlib
-from typing import Protocol, cast
+from typing import Protocol, runtime_checkable
 from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
@@ -43,6 +43,7 @@ class ClosableTransport(Protocol):
     def close(self) -> None: ...
 
 
+@runtime_checkable
 class ProcessTransportOwner(Protocol):
     _transport: ClosableTransport | None
 
@@ -215,10 +216,9 @@ async def terminate_process(proc: asyncio.subprocess.Process, *, engine_name: st
 
 
 async def close_process_transport(proc: asyncio.subprocess.Process) -> None:
-    try:
-        transport = cast(ProcessTransportOwner, cast(object, proc))._transport
-    except AttributeError:
+    if not isinstance(proc, ProcessTransportOwner):
         return
+    transport = proc._transport
     if transport is None:
         return
     with contextlib.suppress(Exception):

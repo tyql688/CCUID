@@ -15,7 +15,7 @@ dependencies = [
     "linkify-it-py>=2.1.1",
     "markdown-it-py>=4.2.0",
     "mdit-py-plugins>=0.6.1",
-    "pygments>=2.21.0",
+    "pygments>=2.19.2",
 ]
 
 [tool.ccuid.vendor]

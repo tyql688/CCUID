@@ -42,7 +42,7 @@ requires-dist = [
     { name = "linkify-it-py", specifier = ">=2.1.1" },
     { name = "markdown-it-py", specifier = ">=4.2.0" },
     { name = "mdit-py-plugins", specifier = ">=0.6.1" },
-    { name = "pygments", specifier = ">=2.21.0" },
+    { name = "pygments", specifier = ">=2.19.2" },
 ]
 
 [[package]]

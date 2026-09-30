@@ -10,9 +10,8 @@ from .admin_service import (
     run_revoke_group,
 )
 
-# 授权列表单独一个 SV，priority 比 sv_admin 更高（数字越小越早）：
-# fullmatch 在 regex 之前优先匹配，确保「授权列表」不会被「授权」前缀吞掉。
-# 实际上下面的 regex 已经 $ 锚定排除「授权列表」，独立 SV 是二重保险。
+# 授权列表单独一个更高优先级的 SV，保证「授权列表」不被「授权」前缀吞掉；
+# 下面的 regex 已用 $ 锚定排除它，独立 SV 是二重保险
 sv_admin_list = SV("CCUID 授权列表", pm=0, area="ALL", priority=3)
 sv_admin = SV("CCUID 授权", pm=0, area="ALL", priority=4)
 

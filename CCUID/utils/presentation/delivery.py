@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import base64
+import asyncio
 import binascii
 from pathlib import Path
 from dataclasses import field, dataclass
@@ -16,7 +17,9 @@ from gsuid_core.message_models import Button
 from .blocks import _block_render_size, blocks_to_text_parts
 from ..render import (
     ChatBlock,
+    MediaBlock,
     ImageContext,
+    PermissionBlock,
     render_to_pngs,
     build_html_body,
     engine_icon_url,
@@ -104,11 +107,11 @@ async def _send_as_text(bot: Bot, blocks: list[ChatBlock]) -> None:
     await bot.send("\n\n".join(parts))
 
 
-async def send_permission_request(bot: Bot, block: ChatBlock, ctx: RenderContext) -> None:
+async def send_permission_request(bot: Bot, block: PermissionBlock, ctx: RenderContext) -> None:
     parts = blocks_to_text_parts([block])
     if not parts:
         return
-    buttons = _permission_buttons(block.meta["options"])
+    buttons = _permission_buttons(block.options)
     if not buttons:
         await send_blocks(bot, [block], ctx)
         return
@@ -130,15 +133,14 @@ async def send_permission_request(bot: Bot, block: ChatBlock, ctx: RenderContext
 async def send_blocks(bot: Bot, blocks: list[ChatBlock], ctx: RenderContext) -> None:
     if not blocks:
         return
-    renderable = [block for block in blocks if block.kind not in {"agent_image", "agent_audio"}]
+    renderable = [block for block in blocks if not isinstance(block, MediaBlock)]
     if _should_image(renderable):
         sent = await _send_as_images(bot, renderable, ctx)
         if not sent:
             await _send_as_text(bot, renderable)
     else:
         await _send_as_text(bot, renderable)
-    await _send_agent_images(bot, blocks)
-    await _send_agent_audio(bot, blocks)
+    await _send_agent_media(bot, blocks)
     await _send_referenced_attachments(bot, renderable, ctx)
 
 
@@ -152,9 +154,7 @@ _MAX_IMAGE_BYTES = 30 * 1024 * 1024
 _MAX_FILE_BYTES = 100 * 1024 * 1024
 _MAX_REFERENCED_ATTACHMENTS = 8
 _MAX_AGENT_IMAGE_BYTES = _MAX_IMAGE_BYTES
-_MAX_AGENT_IMAGE_BASE64_CHARS = ((_MAX_AGENT_IMAGE_BYTES + 2) // 3) * 4 + 4
 _MAX_AGENT_AUDIO_BYTES = 30 * 1024 * 1024
-_MAX_AGENT_AUDIO_BASE64_CHARS = ((_MAX_AGENT_AUDIO_BYTES + 2) // 3) * 4 + 4
 _SUPPORTED_AGENT_IMAGE_MIME_TYPES = frozenset(
     {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/bmp"}
 )
@@ -183,6 +183,8 @@ def _resolve_attachment_path(raw: str, sandbox: Path | None) -> Path | None:
 
 def _collect_attachment_paths(blocks: list[ChatBlock], sandbox: Path | None) -> list[Path]:
     """从 block body grep 路径、按大小阈值收。sandbox=None 不限范围；传 Path 只收其内的。"""
+    if sandbox is not None:
+        sandbox = sandbox.expanduser().resolve()
     seen: set[Path] = set()
     out: list[Path] = []
     for block in blocks:
@@ -204,8 +206,8 @@ async def _send_referenced_attachments(bot: Bot, blocks: list[ChatBlock], ctx: R
     if CCUIDConfig.get_config("AttachmentSandbox").data:
         if ctx.workdir is None:
             return
-        sandbox = Path(ctx.workdir).expanduser().resolve()
-    for path in _collect_attachment_paths(blocks, sandbox):
+        sandbox = Path(ctx.workdir)
+    for path in await asyncio.to_thread(_collect_attachment_paths, blocks, sandbox):
         ext = path.suffix.lstrip(".").lower()
         if ext in _IMAGE_EXTS:
             await bot.send(MessageSegment.image(path))
@@ -213,62 +215,28 @@ async def _send_referenced_attachments(bot: Bot, blocks: list[ChatBlock], ctx: R
             await bot.send(MessageSegment.file(path, path.name))
 
 
-def _agent_image_mime_supported(raw: object) -> bool:
-    if not isinstance(raw, str):
-        return False
-    mime_type = raw.split(";", 1)[0].strip().lower()
-    return mime_type in _SUPPORTED_AGENT_IMAGE_MIME_TYPES
-
-
-def _decode_agent_image(raw: object) -> bytes | None:
-    if not isinstance(raw, str):
+def _decode_media(block: MediaBlock, mime_types: frozenset[str], max_bytes: int) -> bytes | None:
+    if block.mime_type.split(";", 1)[0].strip().lower() not in mime_types:
         return None
-    if len(raw) > _MAX_AGENT_IMAGE_BASE64_CHARS:
+    if len(block.data) > ((max_bytes + 2) // 3) * 4 + 4:
         return None
     try:
-        data = base64.b64decode(raw, validate=True)
+        data = base64.b64decode(block.data, validate=True)
     except (binascii.Error, ValueError):
         return None
-    if len(data) > _MAX_AGENT_IMAGE_BYTES:
-        return None
-    return data
+    return data if len(data) <= max_bytes else None
 
 
-async def _send_agent_images(bot: Bot, blocks: list[ChatBlock]) -> None:
-    """agent 通过 ACP ImageContentBlock 内联返回的图，base64 解码后直发 bot。"""
+async def _send_agent_media(bot: Bot, blocks: list[ChatBlock]) -> None:
+    """agent 通过 ACP 内联返回的图片 / 语音，base64 解码后直发 bot。"""
     for block in blocks:
-        if block.kind != "agent_image":
+        if not isinstance(block, MediaBlock):
             continue
-        if "mime_type" not in block.meta or not _agent_image_mime_supported(block.meta["mime_type"]):
-            continue
-        if "data" not in block.meta:
-            continue
-        data = _decode_agent_image(block.meta["data"])
-        if data is None:
-            continue
-        await bot.send(MessageSegment.image(data))
-
-
-async def _send_agent_audio(bot: Bot, blocks: list[ChatBlock]) -> None:
-    for block in blocks:
-        if block.kind != "agent_audio":
-            continue
-        if "mime_type" not in block.meta:
-            continue
-        raw_mime = block.meta["mime_type"]
-        if (
-            not isinstance(raw_mime, str)
-            or raw_mime.split(";", 1)[0].strip().lower() not in _SUPPORTED_AGENT_AUDIO_MIME_TYPES
-        ):
-            continue
-        if "data" not in block.meta:
-            continue
-        raw_data = block.meta["data"]
-        if len(raw_data) > _MAX_AGENT_AUDIO_BASE64_CHARS:
-            continue
-        try:
-            data = base64.b64decode(raw_data, validate=True)
-        except (binascii.Error, ValueError):
-            continue
-        if len(data) <= _MAX_AGENT_AUDIO_BYTES:
-            await bot.send(MessageSegment.record(data))
+        if block.kind == "agent_image":
+            data = _decode_media(block, _SUPPORTED_AGENT_IMAGE_MIME_TYPES, _MAX_AGENT_IMAGE_BYTES)
+            if data is not None:
+                await bot.send(MessageSegment.image(data))
+        else:
+            data = _decode_media(block, _SUPPORTED_AGENT_AUDIO_MIME_TYPES, _MAX_AGENT_AUDIO_BYTES)
+            if data is not None:
+                await bot.send(MessageSegment.record(data))

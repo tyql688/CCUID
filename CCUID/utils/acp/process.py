@@ -23,6 +23,7 @@ from .orphans import (
     descendant_procs,
 )
 from ..engines import EngineSpec
+from ...cc_config.cc_config import CCUIDConfig
 
 STREAM_LIMIT_BYTES = 50 * 1024 * 1024
 TERMINATE_TIMEOUT_SEC = 3
@@ -85,16 +86,12 @@ def _ensure_workdir(workdir: str) -> None:
 
 
 def _agent_uses_proxy(engine_name: str) -> bool:
-    from ...cc_config.cc_config import CCUIDConfig
-
     agents = CCUIDConfig.get_config("AgentProxyAgents").data
     enabled = {agent.strip().lower() for agent in agents if agent.strip()}
     return "all" in enabled or engine_name in enabled
 
 
 def _apply_agent_proxy_env(env: dict[str, str], engine_name: str) -> None:
-    from ...cc_config.cc_config import CCUIDConfig
-
     if not CCUIDConfig.get_config("AgentProxyMode").data:
         return
     if not _agent_uses_proxy(engine_name):
@@ -122,6 +119,11 @@ def build_spawn_env(engine: EngineSpec) -> dict[str, str]:
             env["CLAUDE_CODE_EXECUTABLE"] = system_claude
             logger.debug(f"[CCUID/{engine.name}] CLAUDE_CODE_EXECUTABLE={system_claude}")
     return env
+
+
+def _prepare_spawn(engine: EngineSpec, workdir: str) -> tuple[tuple[str, ...], dict[str, str]]:
+    _ensure_workdir(workdir)
+    return resolve_launcher(engine.cmd), build_spawn_env(engine)
 
 
 async def close_stdin(proc: asyncio.subprocess.Process) -> None:
@@ -190,9 +192,8 @@ async def terminate_process(proc: asyncio.subprocess.Process, *, engine_name: st
     if sys.platform != "win32":
         await _terminate_process_posix(proc, engine_name=engine_name)
         return
-    # Windows：没有 kill 级联、stdin-EOF 又穿不过 cmd.exe shim，只 terminate launcher 会把
-    # cmd.exe→node→claude→MCP 整棵留成孤儿（实测每次 teardown 漏一棵）。趁树还活着 taskkill /F /T
-    # 按 ppid 重新枚举 live 树整棵收割（捕获 psutil 快照之后才生的子进程），再走 psutil 快照兜底。
+    # Windows 只 terminate launcher 会把 cmd.exe→node→agent 整棵留成孤儿：趁树还活着
+    # taskkill /F /T 按 ppid 整棵收割（含快照后新生的子进程），再用 psutil 快照兜底
     descendants = descendant_procs(proc.pid)
     reaped_tree = False
     if proc.returncode is None:
@@ -254,8 +255,7 @@ async def spawn_process(
     *,
     log_prefix: str = "",
 ) -> SpawnedProcess:
-    _ensure_workdir(workdir)
-    cmd = resolve_launcher(engine.cmd)
+    cmd, env = await asyncio.to_thread(_prepare_spawn, engine, workdir)
     prefix = f"{log_prefix} " if log_prefix else ""
     logger.debug(f"[CCUID/{engine.name}] {prefix}{' '.join(cmd)} cwd={workdir}")
     proc = await asyncio.create_subprocess_exec(
@@ -265,13 +265,12 @@ async def spawn_process(
         stderr=asyncio.subprocess.PIPE,
         cwd=workdir,
         limit=STREAM_LIMIT_BYTES,
-        env=build_spawn_env(engine),
-        # POSIX: setsid ⇒ launcher 成会话/进程组 leader（pgid==proc.pid，已实测），teardown 用
-        # killpg 整组收（内核原子，覆盖 teardown 开始后才 fork 的子进程）。该参数在 Windows 上
-        # 是 POSIX-only no-op（等同默认 False），spawn 行为不变。
+        env=env,
+        # POSIX setsid 让 launcher 成为进程组 leader（pgid==pid），teardown 可 killpg 整组，
+        # 覆盖 teardown 期间才 fork 的子进程；Windows 上此参数无效
         start_new_session=sys.platform != "win32",
     )
-    # session leader 的 pgid 恒等于自身 pid，无需 getpgid 系统调用（也避开 leader 瞬退的 race）。
+    # 同步落盘：spawn 后不留 await 点，否则取消会让子进程脱离清理；leader 的 pgid 恒等于自身 pid
     record_spawn(proc.pid, engine.name, pgid=(None if sys.platform == "win32" else proc.pid))
     stderr_task = asyncio.create_task(
         pump_stderr(proc, stderr_tail, engine_name=engine.name),

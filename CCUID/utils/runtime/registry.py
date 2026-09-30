@@ -56,20 +56,17 @@ class SessionRegistry:
                 item.future.set_result(None)
         return len(pending)
 
-    def _can_recycle(self, meta: SessionMeta) -> bool:
-        return not self._is_active(meta)
-
     def _is_active(self, meta: SessionMeta) -> bool:
         return meta.queue.has_entries or self.backend(meta.engine).is_session_busy(meta.sid)
 
     def _select_lru_victim(self) -> SessionMeta | None:
-        candidates = [m for m in self._meta.values() if self._can_recycle(m)]
+        candidates = [m for m in self._meta.values() if not self._is_active(m)]
         if not candidates:
             return None
         return min(candidates, key=lambda x: x.last_active)
 
     def _expired_recyclable_sessions(self, *, now: float, timeout: int) -> list[SessionMeta]:
-        return [m for m in self._meta.values() if self._can_recycle(m) and now - m.last_active > timeout]
+        return [m for m in self._meta.values() if not self._is_active(m) and now - m.last_active > timeout]
 
     async def _shared(self, gid: str | None) -> bool:
         if gid is None:
@@ -365,8 +362,6 @@ class SessionRegistry:
     async def _reap_expired(self) -> None:
         """IdleKeepContext 关时：超时 native_id 从 DB drop 掉，agent 下次拿不到旧 session_id resume。
         开时：保留上下文，不软过期（直接返回）。"""
-        if not WORKDIR_ROOT.exists():
-            return
         if bool(CCUIDConfig.get_config("IdleKeepContext").data):
             return
         soft_sec = int(CCUIDConfig.get_config("IdleTimeoutSec").data)
@@ -375,14 +370,20 @@ class SessionRegistry:
         now = time.time()
         async with self._lock:
             live = set(self._meta) | self._closing
-        for entry in WORKDIR_ROOT.iterdir():
-            if not entry.is_dir() or entry.name in live:
+        for sid in await asyncio.to_thread(_workdir_sids):
+            if sid in live:
                 continue
-            updated_at = await CCUIDSessionNative.fetch_updated_at(entry.name)
+            updated_at = await CCUIDSessionNative.fetch_updated_at(sid)
             if updated_at is not None and updated_at > 0 and now - updated_at > soft_sec:
-                await CCUIDSessionNative.drop(entry.name)
+                await CCUIDSessionNative.drop(sid)
                 idle = int(now - updated_at)
-                logger.debug(f"[CCUID] session 软过期(上下文已丢弃): {entry.name} idle={idle}s")
+                logger.debug(f"[CCUID] session 软过期(上下文已丢弃): {sid} idle={idle}s")
+
+
+def _workdir_sids() -> list[str]:
+    if not WORKDIR_ROOT.is_dir():
+        return []
+    return [entry.name for entry in WORKDIR_ROOT.iterdir() if entry.is_dir()]
 
 
 REGISTRY = SessionRegistry()

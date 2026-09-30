@@ -7,7 +7,6 @@ from gsuid_core.help.model import PluginHelp
 from gsuid_core.help.draw_new_plugin_help import get_new_help
 
 from ..version import VERSION
-from ..utils.image import get_footer
 from ..cc_config.prefix import cc_prefix
 
 _HERE = Path(__file__).parent
@@ -25,11 +24,6 @@ def get_help_data() -> dict[str, PluginHelp]:
 plugin_help = get_help_data()
 
 
-def _maybe(name: str) -> Image.Image | None:
-    p = TEXTURE / name
-    return Image.open(p) if p.exists() else None
-
-
 async def get_help(pm: int) -> str | bytes:
     return await get_new_help(
         plugin_name="CCUID",
@@ -38,13 +32,12 @@ async def get_help(pm: int) -> str | bytes:
         plugin_help=plugin_help,
         plugin_prefix=cc_prefix(),
         help_mode="dark",
-        banner_bg=_maybe("banner_bg.jpg"),
+        banner_bg=Image.open(TEXTURE / "banner_bg.jpg"),
         banner_sub_text="把 cli agents 装进 gscore",
-        help_bg=_maybe("bg.jpg"),
-        cag_bg=_maybe("cag_bg.png"),
-        item_bg=_maybe("item.png"),
-        footer=get_footer(),
-        highlight_bg=_maybe("highlight.png"),
+        help_bg=Image.open(TEXTURE / "bg.jpg"),
+        cag_bg=Image.open(TEXTURE / "cag_bg.png"),
+        item_bg=Image.open(TEXTURE / "item.png"),
+        footer=Image.open(TEXTURE / "footer.png"),
         icon_path=ICON_PATH,
         enable_cache=False,
         column=4,

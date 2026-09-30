@@ -11,7 +11,7 @@ readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.11, <4.0"
 dependencies = [
-    "agent-client-protocol>=0.12.1,<0.13",
+    "agent-client-protocol>=1.0.0rc2,<2",
     "linkify-it-py>=2.1.1",
     "markdown-it-py>=4.2.0",
     "mdit-py-plugins>=0.6.1",
@@ -24,12 +24,3 @@ mermaid = "11.17.2"
 
 [tool.pdm.build]
 excludes = ["**/.DS_Store"]
-
-[tool.pyright]
-include = ["CCUID"]
-exclude = ["**/__pycache__", ".venv"]
-venvPath = "../../.."
-venv = ".venv"
-pythonVersion = "3.11"
-typeCheckingMode = "basic"
-reportMissingImports = "warning"

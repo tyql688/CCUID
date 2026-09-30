@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import re
 import base64
+import asyncio
 from html import escape
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal
 from pathlib import Path
 from datetime import datetime
 from functools import lru_cache
-from dataclasses import field, dataclass
+from dataclasses import dataclass
 
 from pygments import highlight
 from acp.schema import PermissionOption, ToolCallLocation
@@ -139,26 +140,41 @@ BlockKind = Literal[
 ]
 
 
-class ChatMeta(TypedDict, total=False):
+@dataclass(slots=True, frozen=True)
+class ChatBlock:
+    kind: BlockKind
+    body: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class MediaBlock(ChatBlock):
     data: str
     mime_type: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ToolBlock(ChatBlock):
+    tool_kind: str
+    tool_call_id: str | None = None
+    title: str | None = None
+    summary: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class PlanBlock(ChatBlock):
+    # None = 旧版无 id 的 AgentPlanUpdate，整会话只有一份
+    plan_id: str | None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class PermissionBlock(ChatBlock):
     decision: PermissionMode
-    kind: str | None
+    tool_kind: str | None
     title: str | None
     matched: bool
     locations: tuple[ToolCallLocation, ...]
     content_summary: str | None
     options: list[PermissionOption]
-    plan_id: str
-    tool_call_id: str
-    summary: str | None
-
-
-@dataclass(slots=True, frozen=True)
-class ChatBlock:
-    kind: BlockKind
-    body: str
-    meta: ChatMeta = field(default_factory=dict)
 
 
 def _format_duration(sec: float) -> str:
@@ -226,10 +242,8 @@ def _render_block(block: ChatBlock) -> str:
         return ""
     if block.kind == "think":
         return f'<div class="cc-think">{_tag("think")}{_text(block.body)}</div>'
-    if block.kind == "tool":
-        kind = block.meta["kind"]
-        if kind is None:
-            raise ValueError("tool block kind must not be None")
+    if isinstance(block, ToolBlock):
+        kind = block.tool_kind
         if kind == "other":
             return _render_untrusted_markdown(block.body)
         return f'<div class="cc-tool cc-tool-{kind}">{_render_labeled_markdown(kind, kind, block.body)}</div>'
@@ -243,21 +257,19 @@ def _render_block(block: ChatBlock) -> str:
     if block.kind == "error":
         body = escape(block.body, quote=False)
         return f'<div class="cc-error">{_tag("error", "failed")}<pre class="cc-error-body">{body}</pre></div>'
-    if block.kind == "permission":
+    if isinstance(block, PermissionBlock):
         return _render_permission(block)
     if block.kind == "usage_footer":
         return f'<div class="cc-usage-footer">{_text(block.body)}</div>'
     return _text(block.body)
 
 
-def _render_permission(block: ChatBlock) -> str:
-    decision = block.meta["decision"]
-    tool_kind = block.meta["kind"]
-    tool_title = block.meta["title"]
-    matched = block.meta["matched"]
-    locations = block.meta["locations"]
-    content_summary = clean_permission_summary(block.meta["content_summary"])
-    display = permission_display(decision, matched=matched)
+def _render_permission(block: PermissionBlock) -> str:
+    tool_kind = block.tool_kind
+    tool_title = block.title
+    locations = block.locations
+    content_summary = clean_permission_summary(block.content_summary)
+    display = permission_display(block.decision, matched=block.matched)
 
     header_parts = [_tag(display.label, display.state)]
     if tool_kind is not None:
@@ -331,8 +343,6 @@ def build_html_body(blocks: list[ChatBlock], ctx: ImageContext) -> str:
 
 @lru_cache(maxsize=1)
 def _chat_css() -> str:
-    if not CHAT_CSS.exists():
-        return ""
     return _inline_font_urls(CHAT_CSS.read_text(encoding="utf-8"), _ASSETS)
 
 
@@ -343,8 +353,6 @@ def _chat_html() -> str:
 
 @lru_cache(maxsize=1)
 def _katex_css() -> str:
-    if not _KATEX_CSS.exists():
-        return ""
     return _inline_font_urls(_KATEX_CSS.read_text(encoding="utf-8"), _KATEX_CSS.parent)
 
 
@@ -358,9 +366,7 @@ def _inline_font_urls(css: str, root: Path) -> str:
 
 @lru_cache(maxsize=1)
 def _pygments_css() -> str:
-    from pygments.formatters.html import HtmlFormatter
-
-    return HtmlFormatter(cssclass="highlight", style="friendly").get_style_defs(".highlight")
+    return _PYG_FORMATTER.get_style_defs(".highlight")
 
 
 def _html_doc(body: str) -> str:
@@ -384,8 +390,9 @@ async def _render_extras(page: Page) -> None:
 
 
 async def render_to_pngs(body_html: str, *, max_width: int = 720, scale: int = 2) -> list[bytes]:
+    # 首次要读并 base64 内联数 MB 字体，每次还要拼整份文档，放线程里不卡事件循环
     return await render_html_to_pngs(
-        _html_doc(body_html),
+        await asyncio.to_thread(_html_doc, body_html),
         max_width=max_width,
         scale=scale,
         single_image_height=_SINGLE_IMAGE_HEIGHT_CSS_PX,

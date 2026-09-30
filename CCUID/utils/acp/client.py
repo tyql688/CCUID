@@ -11,8 +11,10 @@ from acp.schema import (
     ToolCallUpdate,
     ElicitationMode,
     PermissionOption,
+    ConnectMcpResponse,
     KillTerminalResponse,
     ReadTextFileResponse,
+    DisconnectMcpResponse,
     WriteTextFileResponse,
     CreateTerminalResponse,
     TerminalOutputResponse,
@@ -173,6 +175,30 @@ class ACPClient(Client):
         **_: object,
     ) -> None:
         _disabled("elicitation")
+
+    async def connect_mcp(self, server_id: str, **_: object) -> ConnectMcpResponse:
+        _disabled("mcp")
+
+    async def disconnect_mcp(self, connection_id: str, **_: object) -> DisconnectMcpResponse:
+        _disabled("mcp")
+
+    async def mcp_message(
+        self,
+        connection_id: str,
+        method: str,
+        params: dict[str, object] | None = None,
+        **_: object,
+    ) -> object:
+        _disabled("mcp")
+
+    async def notify_mcp(
+        self,
+        connection_id: str,
+        method: str,
+        params: dict[str, object] | None = None,
+        **_: object,
+    ) -> None:
+        _disabled("mcp")
 
     async def ext_method(self, method: str, params: dict[str, object]) -> dict[str, object]:
         _disabled(f"extension method: {method}")

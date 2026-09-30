@@ -4,14 +4,15 @@ requires-python = ">=3.11, <4.0"
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.12.1"
+version = "1.0.0rc2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
+    { name = "pydantic-core" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9d/95/2c28ca34e545ce0282e88272aa3a8abdf8f3f926a0492f567ea11acd071b/agent_client_protocol-0.12.1.tar.gz", hash = "sha256:9963ccb590ed96d7dc542c9c023e90676fc76b1c6562e21a9ee112f4fbcb0095", size = 130605, upload-time = "2026-08-16T14:08:22.545Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/ac/53520d32dd6afb8cef77bf2b731f9eb451d4a8dffbf0df104a1148724eed/agent_client_protocol-1.0.0rc2.tar.gz", hash = "sha256:c83b875efd036a95273d582daf02b29a509024d0232a2afd6187ce8d5564277d", size = 175309, upload-time = "2026-09-21T09:18:20.165Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/21/61/0a2186c8ca53cf464767d4c4fb7fd9e23f48ce4547c2fa0d1c83a4d52410/agent_client_protocol-0.12.1-py3-none-any.whl", hash = "sha256:aaf3cc301ed87d9e2c4ccb91adfe1cd58784355f6ce7e513f50e7ca2391862ef", size = 85929, upload-time = "2026-08-16T14:08:21.307Z" },
+    { url = "https://files.pythonhosted.org/packages/67/65/fefe1b5d234cb04e2e7e4fe3214865dfd01ced621a01eb00b58d26becfca/agent_client_protocol-1.0.0rc2-py3-none-any.whl", hash = "sha256:bd12a0b726c895353a6f7cf7b23d62d5f64191974a1cfadb83fe27ccdd8a0124", size = 125687, upload-time = "2026-09-21T09:18:18.997Z" },
 ]
 
 [[package]]
@@ -37,7 +38,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-client-protocol", specifier = ">=0.12.1,<0.13" },
+    { name = "agent-client-protocol", specifier = ">=1.0.0rc2,<2" },
     { name = "linkify-it-py", specifier = ">=2.1.1" },
     { name = "markdown-it-py", specifier = ">=4.2.0" },
     { name = "mdit-py-plugins", specifier = ">=0.6.1" },

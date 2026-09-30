@@ -16,10 +16,8 @@ from gsuid_core.logger import logger
 
 from ..resource.RESOURCE_PATH import WORKDIR_ROOT
 
-# ~/.ccuid/spawned_pids.json —— 跟 session workdir 同根，方便观察。
-# 新格式：{ "<pid>": {"hint": "<cmdline 期望子串>", "pgid": <int|null>} }
-# 兼容旧格式：{ "<pid>": "<hint>" }（升级首启不丢旧孤儿）。
-# pgid 仅 POSIX 记录：leader 死后子进程仍共享其 pgid，reap 时可 killpg 整组兜回。
+# {"<pid>": {"hint": <cmdline 子串>, "pgid": <int|null>}}，也读旧版 {"<pid>": "<hint>"}；
+# pgid 仅 POSIX 记录：leader 死后子进程仍共享 pgid，reap 时 killpg 整组收回
 _PID_FILE = WORKDIR_ROOT / "spawned_pids.json"
 _TERMINATE_GRACE_SEC = 3.0
 

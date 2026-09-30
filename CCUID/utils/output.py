@@ -8,7 +8,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 
 from .errors import user_error
-from .render import ChatBlock
+from .render import ChatBlock, PermissionBlock
 from .acp.backend import PromptUsage, BackendError
 from .presentation.blocks import (
     ToolDisplayMode,
@@ -61,11 +61,11 @@ async def render(
                 kind, text, message_id = out
                 buffer.append_fragment(kind, text, message_id)
                 continue
-            if out.kind == "permission":
-                if out.meta["decision"] != "ask" and not show_auto_perms:
+            if isinstance(out, PermissionBlock):
+                if out.decision != "ask" and not show_auto_perms:
                     continue
                 await flush_pending()
-                if out.meta["decision"] == "ask":
+                if out.decision == "ask":
                     await send_permission_request(bot, out, ctx)
                 else:
                     await send_blocks(bot, [out], ctx)

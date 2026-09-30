@@ -6,6 +6,8 @@ from gsuid_core.utils.plugins_config.models import (
     GsListStrConfig,
 )
 
+from ..utils.engines import ENGINE_SPECS
+
 CONFIG_DEFAULT: dict[str, GSC] = {
     "IdleTimeoutSec": GsIntConfig(
         "Session 空闲回收秒数",
@@ -91,7 +93,7 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         "使用代理的 Agent CLI",
         "AgentProxyMode 开启时只给这些 agent 注入代理；all=全部；空列表=不注入任何 agent",
         [],
-        options=["all", "claude", "codex", "cursor", "opencode", "kimi", "gemini"],
+        options=["all", *(engine.name for engine in ENGINE_SPECS)],
     ),
     "AgentNoProxy": GsStrConfig(
         "Agent CLI 不走代理地址",

@@ -528,9 +528,8 @@ class ACPBackend:
             # usage 必须按 prompt 清零，否则本轮 agent 未返回 usage 时会误显示上一轮统计。
             _reset_prompt_state(s)
             t0 = time.monotonic()
-            # 同 session 跨 prompt 复用同一条 queue；上一轮 cancel 收尾可能残留 session_update，
-            # 进新一轮前清掉，否则被新 prompt 的 loop 误当自己的输出（症状：新提问返回上次答案）。
-            # 配置 / 模式 / 命令 / session 信息是持久状态，要更新缓存；历史正文与旧 usage 仍直接丢弃。
+            # 上一轮 cancel 可能在共用 queue 里留下旧正文，不清会被当成本轮输出；
+            # 配置 / 模式 / 命令 / session 信息是持久状态，只更新缓存不丢
             _discard_replayed_events(s)
             task = asyncio.create_task(self._request_prompt(s, blocks))
             try:

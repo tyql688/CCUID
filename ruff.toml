@@ -2,7 +2,7 @@ line-length = 120
 target-version = "py311"
 
 [lint]
-select = ["E", "F", "I", "W", "UP", "B"]
+select = ["E", "F", "I", "W", "UP", "B", "ASYNC"]
 ignore = ["E501", "B008"]
 
 [lint.per-file-ignores]
